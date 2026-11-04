@@ -1,0 +1,99 @@
+require "json"
+require "tmpdir"
+require "base64"
+require "securerandom"
+
+def required(name)
+  value = ENV[name].to_s.strip
+  UI.user_error!("Missing #{name}") if value.empty?
+  value
+end
+
+def checked_settings
+  team = required("APPLE_TEAM_ID")
+  bundle = required("IOS_BUNDLE_ID")
+  build = required("IOS_BUILD_NUMBER")
+  UI.user_error!("APPLE_TEAM_ID must contain 10 uppercase letters/digits") unless team.match?(/\A[A-Z0-9]{10}\z/)
+  UI.user_error!("IOS_BUNDLE_ID must be a reverse-DNS identifier") unless bundle.match?(/\A[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\z/)
+  UI.user_error!("IOS_BUILD_NUMBER must be a numeric build number") unless build.match?(/\A\d+(?:\.\d+){0,2}\z/)
+  [team, bundle, build]
+end
+
+default_platform(:ios)
+platform :ios do
+  desc "Create a signed build and upload it to TestFlight (never submits to the public App Store)"
+  lane :beta do
+    team, bundle, build = checked_settings
+    signing = nil
+    if ENV["ELEMENT_SIGNING_BUNDLE"]
+      signing = JSON.parse(File.read(ENV.fetch("ELEMENT_SIGNING_BUNDLE")))
+      ENV["SIGNING_WORK_DIR"] = Dir.mktmpdir("element-signing")
+      ENV["ASC_KEY_PATH"] = File.join(ENV.fetch("SIGNING_WORK_DIR"), "AuthKey.p8")
+      File.write(ENV.fetch("ASC_KEY_PATH"), signing.fetch("privateKey"), perm: 0600)
+      ENV["ASC_KEY_ID"] = signing.fetch("keyId")
+      ENV["ASC_ISSUER_ID"] = signing.fetch("issuerId")
+    end
+    api_key = app_store_connect_api_key(
+      key_id: required("ASC_KEY_ID"),
+      issuer_id: required("ASC_ISSUER_ID"),
+      key_filepath: required("ASC_KEY_PATH"),
+      duration: 1200,
+      in_house: false
+    )
+    app = Spaceship::ConnectAPI::App.find(bundle)
+    UI.user_error!("Create an App Store Connect app record for #{bundle} before uploading") unless app
+    certificate_id = nil
+    if signing
+      keychain_password = SecureRandom.hex(24)
+      create_keychain(name: "element_build", password: keychain_password, default_keychain: true, unlock: true, timeout: 3600, lock_when_sleeps: false)
+      p12 = File.join(ENV.fetch("SIGNING_WORK_DIR"), "ElementDistribution.p12")
+      File.binwrite(p12, Base64.strict_decode64(signing.fetch("p12")))
+      File.chmod(0600, p12)
+      import_certificate(certificate_path: p12, certificate_password: signing.fetch("p12Password"), keychain_name: "element_build", keychain_password: keychain_password)
+      identities = sh("security find-identity -v -p codesigning", log: false)
+      UI.user_error!("Distribution certificate import failed: no signing identity") if identities.include?("0 valid identities")
+      certificate_id = signing.fetch("certificateId")
+    else
+      setup_ci(provider: "github", timeout: 3600)
+      get_certificates(api_key: api_key, development: false, generate_apple_certs: true, team_id: team, output_path: ENV.fetch("SIGNING_WORK_DIR"))
+      certificate_id = lane_context[SharedValues::CERT_CERTIFICATE_ID]
+    end
+    get_provisioning_profile(
+      api_key: api_key,
+      app_identifier: bundle,
+      team_id: team,
+      cert_id: certificate_id,
+      provisioning_name: "Element Remote TestFlight",
+      force: true,
+      output_path: ENV.fetch("SIGNING_WORK_DIR")
+    )
+    profile = lane_context[SharedValues::SIGH_NAME]
+    UI.user_error!("No provisioning profile was installed") if profile.to_s.empty?
+    ipa = build_app(
+      project: ENV.fetch("IOS_PROJECT", "ios/App/App.xcodeproj"),
+      scheme: "App",
+      configuration: "Release",
+      clean: true,
+      export_method: "app-store",
+      output_directory: "artifacts/testflight",
+      output_name: "ElementRemote.ipa",
+      skip_profile_detection: true,
+      xcargs: "DEVELOPMENT_TEAM=#{team} PRODUCT_BUNDLE_IDENTIFIER=#{bundle} CURRENT_PROJECT_VERSION=#{build} CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' PROVISIONING_PROFILE_SPECIFIER='#{profile.gsub("'", "")}'",
+      export_options: {
+        signingStyle: "manual",
+        teamID: team,
+        provisioningProfiles: { bundle => profile },
+        manageAppVersionAndBuildNumber: false,
+        uploadSymbols: true
+      }
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: bundle,
+      ipa: ipa,
+      skip_waiting_for_build_processing: true,
+      skip_submission: true,
+      distribute_external: false
+    )
+  end
+end

@@ -1,0 +1,34 @@
+{
+  "name": "element-remote",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test tests/backend.test.mjs",
+    "ios:sync": "npm run build && cap sync ios",
+    "ios:open": "cap open ios",
+    "test:browser": "node tests/react-browser.cjs"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
+    "compression": "^1.8.1",
+    "express": "^5.1.0",
+    "osc": "^2.4.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "vite": "^7.2.0"
+  },
+  "overrides": {
+    "ws": "$ws",
+    "glob": "^14.0.3"
+  }
+}

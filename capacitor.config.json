@@ -1,0 +1,6 @@
+{
+  "appId": "app.elementremote.mobile",
+  "appName": "Element Remote",
+  "webDir": "dist",
+  "ios": { "contentInset": "never", "backgroundColor": "#161616", "preferredContentMode": "mobile" }
+}
