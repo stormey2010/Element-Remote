@@ -1356,7 +1356,7 @@ private struct NativeConsoleView: View {
     @EnvironmentObject var model: NativeRemoteModel
     var body: some View {
         GeometryReader { geometry in
-            let height = min(76.0, max(48.0, (geometry.size.height - 136) / 7.0))
+            let height = min(76.0, max(48.0, (geometry.size.height - 164) / 7.0))
             ScrollView {
                 VStack(spacing: 16) {
                     grid([.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)], count: 4, height: height)

@@ -1,6 +1,12 @@
 name: Build and upload to TestFlight
 on:
   workflow_dispatch:
+    inputs:
+      screenshot_scope:
+        description: 'Native screenshot coverage'
+        type: choice
+        options: [full, console]
+        default: full
 permissions:
   contents: read
 concurrency:
@@ -37,6 +43,8 @@ jobs:
           swift test --package-path native/OSCWire
           bundle install
       - name: Capture native iPhone and iPad screens
+        env:
+          SCREENSHOT_SCOPE: ${{ inputs.screenshot_scope }}
         run: python3 scripts/capture-ios-screens.py
       - name: Keep native screenshots
         uses: actions/upload-artifact@v4
