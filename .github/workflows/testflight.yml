@@ -36,6 +36,15 @@ jobs:
           npm test
           swift test --package-path native/OSCWire
           bundle install
+      - name: Capture native iPhone and iPad screens
+        run: python3 scripts/capture-ios-screens.py
+      - name: Keep native screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: Element-Remote-Screenshots-${{ github.run_number }}
+          path: artifacts/screenshots/*.png
+          retention-days: 7
+          if-no-files-found: error
       - name: Set the Apple build number
         shell: bash
         run: |

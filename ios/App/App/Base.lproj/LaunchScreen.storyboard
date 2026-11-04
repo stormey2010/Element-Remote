@@ -1,32 +1,58 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="17132" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
-    <device id="retina4_7" orientation="portrait" appearance="light"/>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="23501" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
+    <device id="retina6_12" orientation="portrait" appearance="dark"/>
     <dependencies>
         <deployment identifier="iOS"/>
-        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="17105"/>
-        <capability name="System colors in document resources" minToolsVersion="11.0"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23500"/>
+        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
         <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
     </dependencies>
     <scenes>
-        <!--View Controller-->
         <scene sceneID="EHf-IW-A2E">
             <objects>
                 <viewController id="01J-lp-oVM" sceneMemberID="viewController">
-                    <imageView key="view" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="Splash" id="snD-IY-ifK">
-                        <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
-                        <autoresizingMask key="autoresizingMask"/>
-                        <color key="backgroundColor" systemColor="systemBackgroundColor"/>
-                    </imageView>
+                    <view key="view" contentMode="scaleToFill" id="launch-root">
+                        <rect key="frame" x="0" y="0" width="393" height="852"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="slider.vertical.3" catalog="system" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
+                                <rect key="frame" x="156.5" y="324" width="80" height="80"/>
+                                <color key="tintColor" red="0.88" green="0.76" blue="0.53" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="80" id="mark-width"/>
+                                    <constraint firstAttribute="height" constant="80" id="mark-height"/>
+                                </constraints>
+                            </imageView>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Element Remote" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="launch-name">
+                                <rect key="frame" x="86" y="432" width="221" height="34"/>
+                                <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="28"/>
+                                <color key="textColor" white="0.94" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Lighting control, within reach." textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="launch-subtitle">
+                                <rect key="frame" x="100" y="476" width="193" height="18"/>
+                                <fontDescription key="fontDescription" type="system" pointSize="14"/>
+                                <color key="textColor" white="0.55" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                        </subviews>
+                        <viewLayoutGuide key="safeArea" id="launch-safe"/>
+                        <color key="backgroundColor" white="0.055" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                        <constraints>
+                            <constraint firstItem="launch-mark" firstAttribute="centerX" secondItem="launch-root" secondAttribute="centerX" id="mark-center-x"/>
+                            <constraint firstItem="launch-mark" firstAttribute="centerY" secondItem="launch-root" secondAttribute="centerY" constant="-62" id="mark-center-y"/>
+                            <constraint firstItem="launch-name" firstAttribute="top" secondItem="launch-mark" secondAttribute="bottom" constant="28" id="name-top"/>
+                            <constraint firstItem="launch-name" firstAttribute="centerX" secondItem="launch-root" secondAttribute="centerX" id="name-center-x"/>
+                            <constraint firstItem="launch-subtitle" firstAttribute="top" secondItem="launch-name" secondAttribute="bottom" constant="10" id="subtitle-top"/>
+                            <constraint firstItem="launch-subtitle" firstAttribute="centerX" secondItem="launch-root" secondAttribute="centerX" id="subtitle-center-x"/>
+                        </constraints>
+                    </view>
                 </viewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
             </objects>
-            <point key="canvasLocation" x="53" y="375"/>
         </scene>
     </scenes>
     <resources>
-        <image name="Splash" width="1366" height="1366"/>
-        <systemColor name="systemBackgroundColor">
-            <color white="0.086" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
-        </systemColor>
+        <image name="slider.vertical.3" catalog="system" width="128" height="128"/>
     </resources>
 </document>

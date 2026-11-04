@@ -524,6 +524,10 @@ struct CueHistoryItem: Identifiable, Equatable {
     @Published var latency: Int?
     @Published var sentPackets = 0
     @Published var receivedPackets = 0
+    var commandPresentation: EosCommandPresentation {
+        EosCommandPresentation(commandLine, isError: commandError,
+            practiceComplete: demoMode && practiceDesk.entry.isEmpty)
+    }
     @Published var commandError = false
     @Published var activeChannels = "No channel feedback yet"
     @Published var selectedChannels: [Int] = []
@@ -1053,7 +1057,7 @@ struct NativeRemoteView: View {
                 screen("Console") { NativeConsoleView() }.tabItem { Label("Console", systemImage: "keyboard") }.tag(0)
                 screen("Faders") { NativeFadersView() }.tabItem { Label("Faders", systemImage: "slider.vertical.3") }.tag(1)
                 screen("Playback") { NativePlaybackView() }.tabItem { Label("Playback", systemImage: "play.fill") }.tag(2)
-                screen("More") { NativeMoreView(showSettings: $showSettings) }.tabItem { Label("More", systemImage: "ellipsis") }.tag(3)
+                screen("More") { NativeMoreView() }.tabItem { Label("More", systemImage: "ellipsis") }.tag(3)
             }
             .onChange(of: selectedTab) { _ in model.haptic() }
             .environmentObject(model)
@@ -1085,9 +1089,6 @@ struct NativeRemoteView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: RemoteTool.self) { tool in
                 VStack(spacing: 0) {
-                    NativeCommandReadout().padding(12).background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 13))
-                        .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(model.demoMode ? DeskPalette.accent : DeskPalette.rule) }
-                        .padding(.horizontal, 18).padding(.bottom, 8)
                     switch tool {
                     case .movement: NativeWheelsView()
                     case .color: NativeColorView()
@@ -1155,26 +1156,12 @@ struct NativeRemoteView: View {
                         .padding(12)
                         .background(DeskPalette.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 13))
                         .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(model.demoMode ? DeskPalette.accent.opacity(0.8) : DeskPalette.rule) }
-                    if model.movementAvailable || model.colorAvailable {
-                        HStack(spacing: 8) {
-                            if model.movementAvailable { toolShortcut(.movement, title) }
-                            if model.colorAvailable { toolShortcut(.color, title) }
-                        }.buttonStyle(DeskButtonStyle())
-                    }
                 }.padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
                 .fixedSize(horizontal: false, vertical: true)
             }
         }.background(DeskPalette.background).fixedSize(horizontal: false, vertical: true)
     }
-    private func toolShortcut(_ tool: RemoteTool, _ title: String) -> some View {
-        Button {
-            model.haptic()
-            if paths[title]?.last != tool { paths[title, default: []].append(tool) }
-        } label: {
-            Label(tool == .movement ? "Movement" : "Color", systemImage: tool == .movement ? "move.3d" : "paintpalette")
-                .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
-        }.disabled(!model.ready)
-    }
+
 }
 
 private enum RemoteTool: Hashable { case movement, color }
@@ -1182,19 +1169,16 @@ private enum RemoteTool: Hashable { case movement, color }
 private struct NativeCommandReadout: View {
     @EnvironmentObject var model: NativeRemoteModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 1).fill(DeskPalette.accent).frame(width: 1, height: 21)
-                Text(model.commandLine.isEmpty ? (model.ready ? "Ready" : "Waiting for console…") : model.commandLine)
-                    .foregroundStyle(model.commandError ? Color.red : model.commandLine.isEmpty ? Color.secondary : Color.primary)
-                    .font(.system(size: 17)).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                    .textSelection(.enabled).lineLimit(3)
-                    .accessibilityLabel("Console command: " + model.commandLine)
-            }
-            if !model.selectedChannels.isEmpty {
-                Text("Selected: " + model.activeChannels).font(.caption).foregroundStyle(.secondary)
-                    .padding(.leading, 11).lineLimit(2)
-            }
+        let command = model.commandPresentation
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 1).fill(DeskPalette.accent).frame(width: 1, height: 21)
+            (Text(command.text.isEmpty ? (model.ready ? "Ready" : "Waiting for console…") : command.text)
+                + Text(command.isComplete ? "  ◦" : "").foregroundColor(DeskPalette.accent))
+                .foregroundStyle(model.commandError ? Color.red : command.text.isEmpty ? Color.secondary : Color.primary)
+                .font(.system(size: 17)).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                .textSelection(.enabled).lineLimit(3)
+                .accessibilityLabel("Console command: " + command.text)
+                .accessibilityValue(command.isComplete ? "Command complete" : "Editing command")
         }
     }
 }
@@ -1372,22 +1356,30 @@ private struct NativeConsoleView: View {
     @EnvironmentObject var model: NativeRemoteModel
     var body: some View {
         GeometryReader { geometry in
-            let height = min(62.0, max(44.0, (geometry.size.height - 104) / 7.6))
+            let height = min(76.0, max(48.0, (geometry.size.height - 136) / 7.0))
             ScrollView {
                 VStack(spacing: 16) {
                     grid([.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)], count: 4, height: height)
                     VStack(spacing: 8) {
-                        grid([.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group", .teal), .init("Out", "out")], count: 4, height: height)
-                        grid([.init("/", "\\"), .init("+", "+"), .init("Thru", "thru"), .init("−", "-")], count: 4, height: height)
+                        grid([.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group"), .init("Out", "out")], count: 4, height: height)
+                        grid([.init("/", "\\"), .init("+", "+"), .init("−", "-"), .init("Thru", "thru")], count: 4, height: height)
                         grid([.init("7", "7"), .init("8", "8"), .init("9", "9"), .init("Full", "full")], count: 4, height: height)
                         grid([.init("4", "4"), .init("5", "5"), .init("6", "6"), .init("Sneak", "sneak")], count: 4, height: height)
                         grid([.init("1", "1"), .init("2", "2"), .init("3", "3"), .init("At", "@")], count: 4, height: height)
                         grid([.init("Clear", "clear_cmd"), .init("0", "0"), .init(".", "."), .init("Enter", "enter", DeskPalette.accent)], count: 4, height: height)
                     }
+                    HStack(spacing: 10) {
+                        NavigationLink(value: RemoteTool.movement) {
+                            Label("Movement", systemImage: "move.3d").frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        NavigationLink(value: RemoteTool.color) {
+                            Label("Color", systemImage: "paintpalette").frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                    }.font(.subheadline).buttonStyle(DeskButtonStyle())
                     DisclosureGroup("More keys") {
                         grid(selectionKeys + [.init("Highlight", "highlight"), .init("Delay", "delay"), .init("Time", "time"), .init("Home", "home"), .init("Level", "level")], count: 3, height: 44)
-                    }.font(.subheadline).foregroundStyle(.secondary)
-                }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 16)
+                    }.font(.subheadline).foregroundStyle(.secondary).padding(.top, 36)
+                }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 24)
             }
         }
     }
@@ -1691,7 +1683,6 @@ private struct NativeConsoleEditor: View {
 }
 
 private struct NativeMoreView: View {
-    @Binding var showSettings: Bool
     @EnvironmentObject var model: NativeRemoteModel
     @EnvironmentObject var discovery: ConsoleDiscovery
     var body: some View {
@@ -1706,23 +1697,9 @@ private struct NativeMoreView: View {
                     rule
                     row("Beam & Optics", "Zoom, edge, iris & fixture optics", "light.beacon.max") { toolPage { NativeWheelsView(beamOnly: true) } }
                 }
-                section("Organization") {
-                    row("Macros", "Saved console actions", "bolt.horizontal") { NativeMacrosView() }
-                }
                 section("Utilities") {
                     row("Patch", "Fixture information", "point.3.connected.trianglepath.dotted") { NativePatchView() }
-                    rule
-                    Button { showSettings = true } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: "link").font(.system(size: 22)).foregroundStyle(DeskPalette.accent).frame(width: 30)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Connections & Settings").font(.system(size: 16, weight: .medium)).foregroundStyle(.white)
-                                Text("Console, network, and app settings").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 4)
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
-                        }.padding(.vertical, 12).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
+
                 }
             }.padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 20)
         }
@@ -2173,17 +2150,6 @@ private enum CIEChart {
     }()
 }
 
-private struct NativeMacrosView: View {
-    @EnvironmentObject var model: NativeRemoteModel
-    @State private var number = ""
-    var body: some View {
-        Form {
-            TextField("Macro number", text: $number).keyboardType(.numberPad)
-            Button("Run macro") { model.haptic(); if let n = Int(number), n > 0 { model.send("/eos/macro/\(n)/fire") } }.disabled(Int(number).map { $0 <= 0 || $0 > 999999 } ?? true)
-        }.navigationTitle("Macros")
-    }
-}
-
 private struct NativePatchView: View {
     @EnvironmentObject var model: NativeRemoteModel
     @State private var offset = 0
@@ -2206,27 +2172,33 @@ private struct NativePatchView: View {
                         NavigationLink {
                             if let selected = try? EosChannelSelection(String(fixture.channel)) { NativeFixtureDetailsView(selection: selected) }
                         } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("Chan \(fixture.channel)").font(.headline.monospacedDigit())
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 3) {
-                                        Text("DMX " + fixture.patchAddress).font(.subheadline.monospacedDigit()).foregroundStyle(DeskPalette.accent)
-                                        if fixture.endingAddress == nil, (fixture.address ?? 0) > 0 { Text("End not reported").font(.caption2).foregroundStyle(.secondary) }
-                                    }
-                                }
-                                if !fixture.label.isEmpty { Text(fixture.label).font(.subheadline).lineLimit(2) }
-                                HStack {
-                                    if fixture.part > 1 { Text("Part \(fixture.part)") }
-                                    Text(fixture.model.isEmpty ? "Type pending" : fixture.model.replacingOccurrences(of: "_", with: " ")).lineLimit(2)
-                                    Spacer()
-                                    if let level = fixture.level { Text("\(Int(level))%") }
-                                }.font(.caption).foregroundStyle(.secondary)
-                            }.padding(.vertical, 6)
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(String(fixture.channel)).font(.headline.monospacedDigit())
+                                    if fixture.part > 1 { Text("Part \(fixture.part)").font(.caption2).foregroundStyle(.secondary) }
+                                }.frame(width: 48, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(fixture.patchAddress).font(.subheadline.monospacedDigit()).foregroundStyle(DeskPalette.accent)
+                                    if fixture.endingAddress == nil, (fixture.address ?? 0) > 0 { Text("Start only").font(.caption2).foregroundStyle(.secondary) }
+                                }.frame(width: 92, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(fixture.label.isEmpty ? "Fixture \(fixture.channel)" : fixture.label).font(.subheadline.weight(.medium)).lineLimit(2)
+                                    Text(fixture.model.isEmpty ? "Type pending" : fixture.model.replacingOccurrences(of: "_", with: " ")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    Text(fixture.level.map { "\(Int($0))%" } ?? "Level unavailable")
+                                        .font(.caption.monospacedDigit()).foregroundStyle(DeskPalette.accent)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.padding(.vertical, 8)
+                            .accessibilityElement(children: .combine)
                         }
                     }
                     if rows.isEmpty { Text(timedOut ? "No patch data received. Check OSC TX and the connection." : "Waiting for patch…").font(.subheadline).foregroundStyle(.secondary) }
-                } header: { HStack { Text("Channel / Fixture"); Spacer(); Text("DMX address range") } }
+                } header: {
+                    HStack(spacing: 12) {
+                        Text("Channel").frame(width: 48, alignment: .leading)
+                        Text("Address").frame(width: 92, alignment: .leading)
+                        Text("Fixture / Level").frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.caption2)
+                }
                 HStack {
                     Button("Previous") { offset = max(0, offset - 25); load() }.disabled(offset == 0 || model.demoMode)
                     Spacer()

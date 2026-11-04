@@ -357,3 +357,23 @@ public enum EosVersionReply {
         return text
     }
 }
+
+/// Presents Eos's trailing command terminator without changing the underlying OSC text.
+public struct EosCommandPresentation: Equatable {
+    public let text: String
+    public let isComplete: Bool
+
+    public init(_ raw: String, isError: Bool = false, practiceComplete: Bool = false) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasHash = trimmed.hasSuffix("#")
+        let hasEnter = trimmed.range(of: #"(?:^|\s)Enter$"#, options: [.regularExpression, .caseInsensitive]) != nil
+        if hasHash {
+            text = String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)
+        } else if hasEnter, let end = trimmed.range(of: #"(?:^|\s)Enter$"#, options: [.regularExpression, .caseInsensitive]) {
+            text = String(trimmed[..<end.lowerBound]).trimmingCharacters(in: .whitespaces)
+        } else {
+            text = trimmed
+        }
+        isComplete = !isError && !text.isEmpty && (hasHash || hasEnter || practiceComplete)
+    }
+}
