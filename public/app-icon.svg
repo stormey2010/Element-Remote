@@ -1,1 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x2=".7" y2="1"><stop stop-color="#292d2b"/><stop offset="1" stop-color="#141715"/></linearGradient><linearGradient id="mint" x2="1" y2="1"><stop stop-color="#93efbe"/><stop offset="1" stop-color="#50c997"/></linearGradient></defs><rect width="1024" height="1024" fill="url(#bg)"/><rect x="165" y="165" width="694" height="694" rx="170" fill="#1c2420" stroke="#ffffff0f" stroke-width="3"/><g stroke="#52695b" stroke-width="22" stroke-linecap="round"><path d="M326 294v436M512 294v436M698 294v436"/></g><g fill="url(#mint)"><rect x="273" y="364" width="106" height="125" rx="32"/><rect x="459" y="534" width="106" height="125" rx="32"/><rect x="645" y="330" width="106" height="125" rx="32"/></g><g stroke="#1b4934" stroke-width="6" stroke-linecap="round"><path d="M297 426h58M483 596h58M669 392h58"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#282827"/><stop offset=".55" stop-color="#171819"/><stop offset="1" stop-color="#0e1012"/></linearGradient>
+    <radialGradient id="light" cx=".42" cy=".12" r=".85"><stop stop-color="#ead3a8" stop-opacity=".12"/><stop offset="1" stop-color="#ead3a8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f5dfb8"/><stop offset=".52" stop-color="#dfbd82"/><stop offset="1" stop-color="#b99559"/></linearGradient>
+    <linearGradient id="rail" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#343638"/><stop offset="1" stop-color="#232629"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#canvas)"/>
+  <rect width="1024" height="1024" fill="url(#light)"/>
+  <g transform="translate(512 512) scale(1.12) translate(-512 -512)">
+    <g fill="#090b0d" stroke="#ffffff" stroke-opacity=".045" stroke-width="2">
+      <rect x="280" y="236" width="64" height="552" rx="32"/><rect x="480" y="236" width="64" height="552" rx="32"/><rect x="680" y="236" width="64" height="552" rx="32"/>
+    </g>
+    <g fill="url(#rail)"><rect x="301" y="252" width="22" height="520" rx="11"/><rect x="501" y="252" width="22" height="520" rx="11"/><rect x="701" y="252" width="22" height="520" rx="11"/></g>
+    <g fill="#000000" opacity=".32"><rect x="234" y="418" width="156" height="112" rx="30"/><rect x="434" y="578" width="156" height="112" rx="30"/><rect x="634" y="328" width="156" height="112" rx="30"/></g>
+    <g fill="url(#gold)" stroke="#fff0d4" stroke-opacity=".38" stroke-width="2"><rect x="234" y="406" width="156" height="112" rx="30"/><rect x="434" y="566" width="156" height="112" rx="30"/><rect x="634" y="316" width="156" height="112" rx="30"/></g>
+    <g stroke="#735b35" stroke-opacity=".62" stroke-width="5" stroke-linecap="round"><path d="M278 462h68M478 622h68M678 372h68"/></g>
+    <g stroke="#fff5de" stroke-opacity=".52" stroke-width="2" stroke-linecap="round"><path d="M278 468h68M478 628h68M678 378h68"/></g>
+  </g>
+</svg>

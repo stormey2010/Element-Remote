@@ -967,17 +967,24 @@ private let selectionKeys: [ConsoleKey] = [.init("Macro", "macro"), .init("Effec
 
 private enum DeskPalette {
     static var nightVision: Bool { UserDefaults.standard.bool(forKey: "element.nightVision") }
-    static var background: Color { nightVision ? Color(red: 0.05, green: 0.01, blue: 0.01) : Color(white: 0.055) }
-    static var surface: Color { nightVision ? Color(red: 0.12, green: 0.02, blue: 0.02) : Color(white: 0.095) }
-    static var raised: Color { nightVision ? Color(red: 0.20, green: 0.04, blue: 0.04) : Color(white: 0.155) }
-    static var field: Color { nightVision ? Color(red: 0.08, green: 0.01, blue: 0.01) : Color(white: 0.075) }
-    static var accent: Color { nightVision ? Color(red: 1.0, green: 0.25, blue: 0.25) : Color(red: 0.88, green: 0.76, blue: 0.53) }
-    static var rule: Color { Color.white.opacity(0.09) }
+    static var background: Color { nightVision ? Color(red: 0.05, green: 0.01, blue: 0.01) : Color(white: 0.045) }
+    static var surface: Color { nightVision ? Color(red: 0.12, green: 0.02, blue: 0.02) : Color(white: 0.105) }
+    static var raised: Color { nightVision ? Color(red: 0.20, green: 0.04, blue: 0.04) : Color(white: 0.145) }
+    static var field: Color { nightVision ? Color(red: 0.08, green: 0.01, blue: 0.01) : Color(white: 0.065) }
+    static var accent: Color { nightVision ? Color(red: 1.0, green: 0.25, blue: 0.25) : Color(red: 0.92, green: 0.81, blue: 0.62) }
+    static var rule: Color { Color.white.opacity(0.075) }
+    static var surfaceGradient: LinearGradient {
+        LinearGradient(colors: [raised.opacity(0.8), surface], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+    static var edgeGradient: LinearGradient {
+        LinearGradient(colors: [.white.opacity(0.13), .white.opacity(0.035)], startPoint: .top, endPoint: .bottom)
+    }
 }
 
 private struct DeskButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("element.nightVision") private var nightVision = false
     var accent: Color = .gray
     var prominent = false
@@ -993,33 +1000,40 @@ private struct DeskButtonStyle: ButtonStyle {
         default: return accent
         }
     }
-    private let radius: CGFloat = 10
+    private let radius: CGFloat = 14
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(accent == .gray ? Color.white.opacity(0.92) : tint)
+            .foregroundStyle(accent == .gray && !nightVision ? Color(white: 0.94) : tint)
             .background {
-                RoundedRectangle(cornerRadius: radius)
-                    .fill(configuration.isPressed ? DeskPalette.raised : DeskPalette.surface)
-                if accent != .gray {
-                    RoundedRectangle(cornerRadius: radius)
-                        .fill(tint.opacity(prominent ? 0.22 : reduceTransparency ? 0.10 : 0.07))
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(LinearGradient(colors: [configuration.isPressed ? DeskPalette.surface : DeskPalette.raised, DeskPalette.surface], startPoint: .top, endPoint: .bottom))
+                if accent != .gray || nightVision {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(prominent ? 0.25 : 0.10), tint.opacity(prominent ? 0.15 : reduceTransparency ? 0.08 : 0.045)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: radius)
-                    .strokeBorder(accent == .gray ? DeskPalette.rule : tint.opacity(prominent ? 0.45 : 0.22), lineWidth: 1)
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(accent == .gray ? DeskPalette.edgeGradient : LinearGradient(colors: [tint.opacity(prominent ? 0.45 : 0.25), tint.opacity(0.10)], startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
             }
+            .shadow(color: .black.opacity(configuration.isPressed ? 0 : 0.22), radius: 4, x: 0, y: 2)
             .opacity(enabled ? 1 : 0.38)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .scaleEffect(configuration.isPressed ? 0.975 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
 extension View {
-    @ViewBuilder func deskCard() -> some View {
-        self.padding(16)
-            .background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(DeskPalette.rule, lineWidth: 1) }
+    func deskPanel(cornerRadius: CGFloat = 18) -> some View {
+        self.background {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(DeskPalette.surfaceGradient)
+        }.overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(DeskPalette.edgeGradient, lineWidth: 0.75)
+        }.shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 4)
+    }
+    func deskCard() -> some View {
+        self.padding(16).deskPanel()
     }
     @ViewBuilder func commandGlass() -> some View {
         if #available(iOS 26.0, *) {
@@ -1074,7 +1088,7 @@ struct NativeRemoteView: View {
                 NativeConnectionView()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
             }.environmentObject(model).environmentObject(wifi).environmentObject(discovery)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(.dark).tint(DeskPalette.accent)
         }
     }
 
@@ -1114,7 +1128,7 @@ struct NativeRemoteView: View {
     private func screenHeader(_ title: String) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text(title).font(.system(size: 34, weight: .bold)).tracking(-1)
+                Text(title).font(.system(size: 32, weight: .semibold)).tracking(-0.9)
                 Spacer()
                 if title != "More" && title != "Console" {
                     Button { showSettings = true } label: {
@@ -1123,7 +1137,9 @@ struct NativeRemoteView: View {
                     }.accessibilityLabel("Connections")
                 }
                 Button { showSettings = true } label: {
-                    Image(systemName: "gearshape").font(.system(size: 23)).frame(width: 36, height: 38)
+                    Image(systemName: "gearshape").font(.system(size: 20, weight: .regular)).frame(width: 44, height: 44)
+                        .background(DeskPalette.surface, in: Circle())
+                        .overlay { Circle().strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
                 }.accessibilityLabel("Settings")
             }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.9))
                 .frame(height: 48).fixedSize(horizontal: false, vertical: true).layoutPriority(2)
@@ -1144,18 +1160,19 @@ struct NativeRemoteView: View {
             if title == "Console" || !(paths[title] ?? []).isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("Command").font(.caption).foregroundStyle(.secondary)
+                        Text("Command").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                         Spacer()
                         if model.demoMode {
                             Text("TEST MODE").font(.system(size: 9, weight: .semibold)).tracking(0.8)
                                 .foregroundStyle(DeskPalette.accent).padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(DeskPalette.accent.opacity(0.1), in: Capsule())
+                                .background(DeskPalette.accent.opacity(0.08), in: Capsule())
+                                .overlay { Capsule().strokeBorder(DeskPalette.accent.opacity(0.18), lineWidth: 0.5) }
                         }
                     }.padding(.horizontal, 8)
                     NativeCommandReadout()
                         .padding(12)
-                        .background(DeskPalette.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 13))
-                        .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(model.demoMode ? DeskPalette.accent.opacity(0.8) : DeskPalette.rule) }
+                        .background(DeskPalette.surfaceGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(model.demoMode ? DeskPalette.accent.opacity(0.55) : DeskPalette.rule, lineWidth: 0.75) }
                 }.padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -1370,10 +1387,10 @@ private struct NativeConsoleView: View {
                     }
                     HStack(spacing: 10) {
                         NavigationLink(value: RemoteTool.movement) {
-                            Label("Movement", systemImage: "move.3d").frame(maxWidth: .infinity, minHeight: 48)
+                            toolLabel("Movement", "move.3d")
                         }
                         NavigationLink(value: RemoteTool.color) {
-                            Label("Color", systemImage: "paintpalette").frame(maxWidth: .infinity, minHeight: 48)
+                            toolLabel("Color", "paintpalette")
                         }
                     }.font(.subheadline).buttonStyle(DeskButtonStyle())
                     DisclosureGroup("More keys") {
@@ -1383,14 +1400,22 @@ private struct NativeConsoleView: View {
             }
         }
     }
+    private func toolLabel(_ title: String, _ symbol: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(DeskPalette.accent)
+            Text(title).font(.system(size: 14, weight: .medium))
+        }.frame(maxWidth: .infinity, minHeight: 48)
+    }
     private func grid(_ keys: [ConsoleKey], count: Int, height: Double) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: count), spacing: 5) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: count), spacing: 8) {
             ForEach(keys) { key in deskKey(key, height: height) }
         }
     }
     private func deskKey(_ key: ConsoleKey, height: Double) -> some View {
-        Button { model.key(key.address) } label: {
-            Text(key.title).font(.system(size: Int(key.title) != nil ? 25 : 16, weight: .medium, design: .default)).minimumScaleFactor(0.7).multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: height).padding(.horizontal, 2)
+        let isNumber = Int(key.title) != nil
+        let isPrimary = ["Record", "Cue", "Sub", "Chan", "Enter"].contains(key.title)
+        return Button { model.key(key.address) } label: {
+            Text(key.title).font(.system(size: isNumber ? 28 : isPrimary ? 16 : 14, weight: isNumber ? .regular : .medium, design: .default)).minimumScaleFactor(0.7).multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: height).padding(.horizontal, 2)
         }.buttonStyle(DeskButtonStyle(accent: key.color, prominent: key.address == "enter")).accessibilityLabel(key.title)
     }
 }
@@ -1424,12 +1449,12 @@ private struct NativeFadersView: View {
                             model.haptic()
                             if model.selection.contains(n) { model.selection.remove(n) } else { model.selection.insert(n) }
                         } label: {
-                            Text("\(n)").font(.system(size: 18)).frame(width: 32, height: 32)
+                            Text("\(n)").font(.system(size: 16, weight: .medium)).frame(width: 32, height: 32)
                                 .background(model.selection.contains(n) ? DeskPalette.accent.opacity(0.3) : Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
                         }.buttonStyle(.plain).accessibilityLabel("Select fader \(n)").accessibilityAddTraits(model.selection.contains(n) ? .isSelected : [])
                         Text(model.text("/eos/out/fader/1/\(n)/name").isEmpty ? "Fader \(n)" : model.text("/eos/out/fader/1/\(n)/name")).font(.body).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(readout(n)).font(.body.monospacedDigit())
+                        Text(readout(n)).font(.system(size: 15, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
                         Button { bump([n]) } label: { Label("Bump", systemImage: "bolt.fill").font(.caption).padding(.horizontal, 12).frame(minHeight: 32) }
                             .buttonStyle(DeskButtonStyle()).disabled(!model.ready)
                     }
@@ -1441,8 +1466,7 @@ private struct NativeFadersView: View {
                 }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 8)
                 if n != bank*10+10 { Divider().padding(.horizontal, 12) }
             }
-        }.background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(DeskPalette.rule) }
+        }.deskPanel()
     }
     private func faderValue(_ number: Int) -> Double {
         let value = model.feedback["/eos/out/fader/1/\(number)"]?.first ?? model.feedback["/eos/fader/1/\(number)"]?.first
@@ -1492,8 +1516,8 @@ private struct NativePlaybackView: View {
         ScrollView {
             VStack(spacing: 16) {
                 HStack(spacing: 12) {
-                    Image(systemName: "list.bullet")
-                    Text("Cue List 1")
+                    Image(systemName: "list.bullet").foregroundStyle(DeskPalette.accent)
+                    Text("Cue List 1").font(.system(size: 15, weight: .medium))
                     Spacer()
                 }.frame(maxWidth: .infinity, alignment: .leading).deskCard()
 
@@ -1504,7 +1528,7 @@ private struct NativePlaybackView: View {
                         Text(model.isCueFading ? "Fading" : "Ready").font(.caption).foregroundStyle(DeskPalette.accent)
                     }
                     Text(model.activeCueText.isEmpty ? "No cue feedback yet" : model.activeCueText)
-                        .font(.system(size: 24, weight: .medium)).frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.system(size: 26, weight: .semibold)).tracking(-0.4).lineSpacing(3).frame(maxWidth: .infinity, alignment: .leading)
                     ProgressView(value: model.activeCuePercent).tint(DeskPalette.accent)
                     HStack {
                         Text("NEXT").font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
@@ -1522,7 +1546,8 @@ private struct NativePlaybackView: View {
                     Text("Go to cue").font(.headline)
                     HStack {
                         TextField("Cue number", text: $cue).keyboardType(.decimalPad)
-                            .padding(12).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 10))
+                            .padding(12).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
                         Button("Go") { model.goToCue(cue); cue = "" }.buttonStyle(.bordered)
                             .disabled((try? EosCommands.goToCue(cue)) == nil || !model.ready)
                     }
@@ -1619,9 +1644,9 @@ private struct NativeConnectionView: View {
                 NavigationLink("Privacy & licenses") { NativeLegalView() }
             }
             Section {
-                Toggle("Test Mode", isOn: Binding(get: { model.demoMode }, set: { discovery.stop(); model.toggleDemoMode($0); model.haptic() })).tint(.yellow)
+                Toggle("Test Mode", isOn: Binding(get: { model.demoMode }, set: { discovery.stop(); model.toggleDemoMode($0); model.haptic() })).tint(DeskPalette.accent)
             } footer: { Text("Practice with the sample show. No commands reach a console.") }
-        }.navigationTitle("Settings")
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Settings")
         .onAppear { profiles = ConsoleProfileStore.load(); model.connection.setKeepAwake(keepAwake) }
         .onDisappear { discovery.stop() }
         .sheet(item: $editing) { profile in
@@ -1707,10 +1732,8 @@ private struct NativeMoreView: View {
     private var rule: some View { Divider().padding(.leading, 44) }
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline.weight(.medium)).padding(.leading, 6)
-            VStack(spacing: 0, content: content).padding(.horizontal, 14)
-                .background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-                .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(DeskPalette.rule) }
+            Text(title.uppercased()).font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary).padding(.leading, 6)
+            VStack(spacing: 0, content: content).padding(.horizontal, 14).deskPanel()
         }
     }
     private func toolPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -1876,7 +1899,7 @@ private struct DeskWheel: View {
                 Button { adjust(1) } label: { Image(systemName: "chevron.right").frame(width: 38, height: 52) }.accessibilityLabel("Increase " + title)
             }.buttonStyle(.plain).foregroundStyle(.secondary).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 10)).clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.08)) }
-        }.padding(12).background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(12).deskPanel(cornerRadius: 16)
         .onChange(of: model.ready) { _ in previous = 0; residual = 0 }
     }
     private func adjust(_ value: Int, continuous: Bool = false) { model.haptic(continuous: continuous); model.send("/eos/wheel/\(fine ? "fine" : "coarse")/\(param)", [value]) }
@@ -2189,7 +2212,7 @@ private struct NativePatchView: View {
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }.padding(.vertical, 8)
                             .accessibilityElement(children: .combine)
-                        }
+                        }.listRowBackground(DeskPalette.surface).listRowSeparatorTint(DeskPalette.rule)
                     }
                     if rows.isEmpty { Text(timedOut ? "No patch data received. Check OSC TX and the connection." : "Waiting for patch…").font(.subheadline).foregroundStyle(.secondary) }
                 } header: {

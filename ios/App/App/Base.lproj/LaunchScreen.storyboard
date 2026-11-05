@@ -17,7 +17,7 @@
                         <subviews>
                             <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="slider.vertical.3" catalog="system" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
                                 <rect key="frame" x="156.5" y="324" width="80" height="80"/>
-                                <color key="tintColor" red="0.88" green="0.76" blue="0.53" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                <color key="tintColor" red="0.92" green="0.81" blue="0.62" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                                 <constraints>
                                     <constraint firstAttribute="width" constant="80" id="mark-width"/>
                                     <constraint firstAttribute="height" constant="80" id="mark-height"/>
@@ -37,7 +37,7 @@
                             </label>
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="launch-safe"/>
-                        <color key="backgroundColor" white="0.055" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                        <color key="backgroundColor" white="0.045" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
                         <constraints>
                             <constraint firstItem="launch-mark" firstAttribute="centerX" secondItem="launch-root" secondAttribute="centerX" id="mark-center-x"/>
                             <constraint firstItem="launch-mark" firstAttribute="centerY" secondItem="launch-root" secondAttribute="centerY" constant="-62" id="mark-center-y"/>
