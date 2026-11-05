@@ -156,9 +156,11 @@ public enum EosCommands {
         // Original Element 2.9 manual pp. 494–495 uses the index in the address.
         return major < 3 ? OSCMessage(address: "/eos/get/patch/index/\(index)", parameters: []) : OSCMessage(address: "/eos/get/patch/index", parameters: [index])
     }
-    public static func goToCue(_ cue: String) throws -> OSCMessage {
+    public static func goToCue(_ cue: String, list: Int? = nil) throws -> OSCMessage {
         guard cue.range(of: "^[0-9]{1,6}(\\.[0-9]{1,3})?$", options: .regularExpression) != nil else { throw OSCWireError.invalid("Enter a valid cue number") }
-        return OSCMessage(address: "/eos/newcmd", parameters: ["Go_To_Cue \(cue) Enter"])
+        if let list, !(1...999999).contains(list) { throw OSCWireError.invalid("Enter a valid cue list") }
+        let target = list.map { "\($0)/\(cue)" } ?? cue
+        return OSCMessage(address: "/eos/newcmd", parameters: ["Go_To_Cue \(target) Enter"])
     }
     public static func faderLevel(_ number: Int, _ level: Double) throws -> OSCMessage {
         guard (1...40).contains(number), level.isFinite, (0...1).contains(level) else { throw OSCWireError.invalid("Invalid fader or level") }
@@ -224,6 +226,8 @@ public struct EosFixtureRecord: Equatable, Identifiable {
     public let gel: String
     public let notes: String
     public var endingAddress: Int? = nil
+    public var textFields: [String] = []
+    public var partCount: Int? = nil
     public var id: String { "\(channel)/\(part)" }
     /// Universe 1 is implicit; never infer a fixture footprint from a neighboring fixture.
     public var patchAddress: String {
@@ -267,7 +271,7 @@ public struct EosFixtureAccumulator {
         guard let data = fields[id], data[4] != nil else { return nil }
         func text(_ index: Int) -> String { data[index] as? String ?? "" }
         func integer(_ index: Int) -> Int? { (data[index] as? NSNumber)?.intValue }
-        return EosFixtureRecord(channel: channel, part: part, label: text(2), manufacturer: text(3), model: text(4), address: integer(5), intensityAddress: integer(6), level: (data[7] as? NSNumber)?.doubleValue, gel: text(8), notes: notes[id] ?? "", endingAddress: integer(20))
+        return EosFixtureRecord(channel: channel, part: part, label: text(2), manufacturer: text(3), model: text(4), address: integer(5), intensityAddress: integer(6), level: (data[7] as? NSNumber)?.doubleValue, gel: text(8), notes: notes[id] ?? "", endingAddress: integer(20), textFields: (9...18).map(text), partCount: integer(19))
     }
 }
 
@@ -375,5 +379,46 @@ public struct EosCommandPresentation: Equatable {
             text = trimmed
         }
         isComplete = !isError && !text.isEmpty && (hasHash || hasEnter || practiceComplete)
+    }
+}
+
+/// Fixture capabilities returned by Eos 3.2+ Get Params (Live values).
+public struct EosFixtureParameter: Identifiable {
+    public let name: String
+    public let level: Double
+    public let minimum: Double
+    public let maximum: Double
+    public var id: String { name }
+    public var oscName: String { name.lowercased().replacingOccurrences(of: " ", with: "_") }
+    public static func parse(_ values: [Any]) -> [EosFixtureParameter] {
+        guard values.count >= 2, (values.count - 2) % 4 == 0 else { return [] }
+        return stride(from: 2, to: values.count, by: 4).compactMap { i in
+            guard let name = values[i] as? String, !name.isEmpty,
+                  let level = values[i+1] as? NSNumber, let min = values[i+2] as? NSNumber,
+                  let max = values[i+3] as? NSNumber,
+                  level.doubleValue.isFinite, min.doubleValue.isFinite, max.doubleValue.isFinite,
+                  min.doubleValue <= max.doubleValue else { return nil }
+            return EosFixtureParameter(name: name, level: level.doubleValue, minimum: min.doubleValue, maximum: max.doubleValue)
+        }
+    }
+}
+
+/// Reassembles OSC list packets, including metadata arriving after a channel/FX packet.
+public struct EosShowData {
+    public private(set) var records: [String: [Int: Any]] = [:]
+    public init() {}
+    public mutating func clear(_ family: String) { records = records.filter { !$0.key.hasPrefix(family + "/") } }
+    @discardableResult public mutating func receive(_ message: OSCMessage) -> String? {
+        let p = message.address.split(separator: "/").map(String.init)
+        guard p.count >= 8, Array(p.prefix(3)) == ["eos", "out", "get"],
+              let marker = p.firstIndex(of: "list"), marker + 2 == p.count-1,
+              let offset = Int(p[marker+1]), let count = Int(p[marker+2]),
+              offset >= 0, count >= 0, offset + count <= 4096, count == message.parameters.count else { return nil }
+        guard ["cue", "cuelist", "fp", "cp", "bp", "sub"].contains(p[3]) else { return nil }
+        let key = p[3..<marker].joined(separator: "/")
+        var fields = records[key] ?? [:]
+        for (index, value) in message.parameters.enumerated() { fields[offset+index] = value }
+        records[key] = fields
+        return key
     }
 }

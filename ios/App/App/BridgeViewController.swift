@@ -537,6 +537,13 @@ struct CueHistoryItem: Identifiable, Equatable {
     @Published var session = UUID()
     @Published var selection: Set<Int> = []
     @Published var fixtures: [String: EosFixtureRecord] = [:]
+    @Published var fixtureParameters: [Int: [EosFixtureParameter]] = [:]
+    @Published var showData = EosShowData()
+    @Published var requestedFamilies: Set<String> = []
+    @Published var showCounts: [String: Int] = [:]
+    private var queryGeneration = UUID()
+    private var familyGenerations: [String: UUID] = [:]
+    private var refreshWork: [String: DispatchWorkItem] = [:]
     @Published var activeCueText = "No cue feedback yet"
     @Published var pendingCueText = "—"
     @Published var activeCuePercent: Double = 0.0
@@ -571,7 +578,9 @@ struct CueHistoryItem: Identifiable, Equatable {
                     self.online = message["consoleOnline"] as? Bool ?? false
                     let nextReady = message["udpReady"] as? Bool ?? false
                     if self.ready != nextReady { self.session = UUID() }
+                    let becameReady = !self.ready && nextReady
                     self.ready = nextReady
+                    if becameReady { for family in self.requestedFamilies { self.requestShow(family) } }
                     self.diagnostic = message["error"] as? String ?? ""
                     let denied = message["localNetworkDenied"] as? Bool ?? false
                     if denied && !self.networkDenied { self.error = "iOS blocked Local Network access. Enable Element Remote in Settings → Privacy & Security → Local Network, then retry." }
@@ -585,6 +594,7 @@ struct CueHistoryItem: Identifiable, Equatable {
                 }
             case "reset":
                 if !self.demoMode {
+                    self.clearShowSession()
                     self.session = UUID(); self.feedback = [:]; self.fixtures = [:]; self.fixtureAccumulator = EosFixtureAccumulator(); self.selection = []; self.ready = false; self.commandError = false; self.activeChannels = "No channel feedback yet"; self.selectedChannels = []; self.movementAvailable = false; self.colorAvailable = false
                     self.commandLine = "Waiting for console…"
                 }
@@ -609,6 +619,7 @@ struct CueHistoryItem: Identifiable, Equatable {
         bumpTokens = [:]; bumpRestore = [:]
         session = UUID()
         demoMode = enabled
+        clearShowSession()
         feedback = [:]; fixtures = [:]; selectedChannels = []; movementAvailable = false; colorAvailable = false
         practiceDesk = EosPracticeDesk()
         if enabled {
@@ -616,7 +627,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             try? practiceDesk.execute("Chan 1 Thru 12 At Full Enter")
             online = true
             ready = true
-            softwareVersion = "2.9.3 (Test Mode)"
+            softwareVersion = "3.3 (Test Mode)"
             phase = "Practice"; networkStatus = "Test Mode"; latency = nil; diagnostic = ""; networkDenied = false
             commandLine = practiceDesk.commandLine
             activeChannels = "1 Thru 12"
@@ -703,6 +714,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             if self.fixtures.count >= 512, self.fixtures[fixture.id] == nil, let first = self.fixtures.keys.first { self.fixtures.removeValue(forKey: first) }
             self.fixtures[fixture.id] = fixture
         }
+        receiveShowData(address, values)
         if address == "/eos/out/cmd" || (address.hasPrefix("/eos/out/user/") && address.hasSuffix("/cmd")) {
             self.commandLine = values.first as? String ?? ""
             self.commandError = (values.dropFirst().first as? NSNumber)?.intValue == 1
@@ -711,7 +723,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             activeChannels = values.map { String(describing: $0) }.joined(separator: " ")
             let next = EosSelectionContext.channels(from: activeChannels)
             if next != selectedChannels {
-                selectedChannels = next; movementAvailable = false; colorAvailable = false; session = UUID()
+                selectedChannels = next; if let first = next.first { fixtureParameters[first] = nil; requestParameters(first) }; movementAvailable = false; colorAvailable = false; session = UUID()
                 feedback = feedback.filter { !$0.key.hasPrefix("/eos/out/param/") && !$0.key.hasPrefix("/eos/out/active/wheel/") && !$0.key.hasPrefix("/eos/out/color/") }
             }
         }
@@ -772,6 +784,12 @@ struct CueHistoryItem: Identifiable, Equatable {
                     commandLine = text
                     return
                 }
+                if text.contains("Palette"), let palette = text.split(separator: " ").dropLast().last.flatMap({ Int($0) }) {
+                    if text.hasPrefix("Color") { practiceDesk.setColor([Double(palette * 60 % 360), 80]) }
+                    if text.hasPrefix("Focus") { practiceDesk.setParameter("pan", value: Double(palette * 20)); practiceDesk.setParameter("tilt", value: Double(palette * 10)) }
+                    if text.hasPrefix("Beam") { practiceDesk.setParameter("zoom", value: Double(palette * 8)) }
+                    practiceDesk.completeExternalCommand(text); syncPracticeDesk(); return
+                }
                 do { try practiceDesk.execute(text); syncPracticeDesk() }
                 catch { self.error = error.localizedDescription }
             } else if address.hasPrefix("/eos/fader/1/"), address.hasSuffix("/fire"), let n = Int(address.split(separator: "/").dropLast().last ?? "") {
@@ -813,7 +831,13 @@ struct CueHistoryItem: Identifiable, Equatable {
                 practiceDesk.setColor([Double(n-1) / 32 * 360, 80]); syncPracticeDesk()
             }
             if parts.count == 4, parts[1] == "param" {
-                practiceDesk.extreme(parts[2], maximum: parts[3] == "max")
+                let name = parts[2]
+                if parts[3] == "home" {
+                    let homes = ["pan": 0.0, "tilt": 0.0, "zoom": 35.0, "edge": 50.0, "iris": 100.0]
+                    practiceDesk.setParameter(name, value: homes[name] ?? 0)
+                } else if let parameter = fixtureParameters[selectedChannels.first ?? 0]?.first(where: { $0.oscName == name }) {
+                    practiceDesk.setParameter(name, value: parts[3] == "max" ? parameter.maximum : parameter.minimum)
+                } else { practiceDesk.extreme(name, maximum: parts[3] == "max") }
                 syncPracticeDesk()
             }
             return
@@ -850,8 +874,8 @@ struct CueHistoryItem: Identifiable, Equatable {
         }
     }
 
-    func goToCue(_ cue: String) {
-        guard let message = try? EosCommands.goToCue(cue) else { error = "Enter a valid cue number"; return }
+    func goToCue(_ cue: String, list: Int? = nil) {
+        guard let message = try? EosCommands.goToCue(cue, list: list) else { error = "Enter a valid cue number"; return }
         send(message)
     }
     func useConsole(_ profile: ConsoleProfile) {
@@ -877,6 +901,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             feedback.removeValue(forKey: key)
         }
         guard let first = practiceDesk.selection?.channels.first else { return }
+        requestParameters(first)
         let defaults = ["intens": 0.0, "pan": 0.0, "tilt": 0.0, "zoom": 35.0, "edge": 50.0, "iris": 100.0, "focus": 50.0, "color_temp": 3200.0, "tint": 0.0, "diffusn": 0.0, "gobo_rot": 0.0]
         for (name, fallback) in defaults {
             feedback["/eos/out/param/" + name] = [practiceDesk.parameters[first]?[name] ?? fallback]
@@ -920,6 +945,7 @@ struct CueHistoryItem: Identifiable, Equatable {
     }
 
     func requestFixtureDetails(_ channels: [Int]) {
+        for channel in channels.prefix(12) { requestParameters(channel) }
         if demoMode {
             for ch in channels {
                 let isLED = ch <= 4, isMover = (5...8).contains(ch)
@@ -945,6 +971,82 @@ struct CueHistoryItem: Identifiable, Equatable {
         fixtureAccumulator.clear(channels: selected)
         fixtures = fixtures.filter { !selected.contains($0.value.channel) }
         for channel in selected.sorted() { send("/eos/get/patch/\(channel)") }
+    }
+
+    private func clearShowSession() {
+        queryGeneration = UUID(); familyGenerations = [:]
+        refreshWork.values.forEach { $0.cancel() }; refreshWork = [:]
+        showData = EosShowData(); showCounts = [:]; fixtureParameters = [:]
+    }
+
+    func requestParameters(_ channel: Int) {
+        guard channel > 0 else { return }
+        if demoMode {
+            fixtureParameters[channel] = EosFixtureParameter.parse(["High End Systems", "SolaFrame", "Intens", 75, 0, 100, "Pan", 0, -270, 270, "Tilt", 35, -135, 135, "Zoom", 30, 5, 50, "Edge", 50, 0, 100, "Gobo_Select", 0, 0, 255, "Gobo_Rotate", 0, -180, 180, "Iris", 100, 0, 100, "Shutter_Strobe", 0, 0, 255])
+            if let data = practiceDesk.parameters[channel], let parameters = fixtureParameters[channel] {
+                fixtureParameters[channel] = EosFixtureParameter.parse(["High End Systems", "SolaFrame"] + parameters.flatMap { p -> [Any] in [p.name, data[p.oscName] ?? p.level, p.minimum, p.maximum] })
+            }
+            return
+        }
+        guard ready else { return }
+        send("/eos/get/params/\(channel)")
+    }
+
+    func requestShow(_ family: String, reset: Bool = true) {
+        guard ["cuelist", "fp", "cp", "bp", "sub"].contains(family) || family.range(of: #"^cue/[0-9]+$"#, options: .regularExpression) != nil else { return }
+        requestedFamilies.insert(family)
+        if reset { showData.clear(family); showCounts[family] = nil }
+        if demoMode {
+            let count = family.hasPrefix("cue/") ? 6 : 4
+            showCounts[family] = count
+            for i in 1...count {
+                let key = family.hasPrefix("cue/") ? "\(family)/\(i)/0" : "\(family)/\(i)"
+                var fields: [Any] = [i-1, "demo-\(key)", family.hasPrefix("cue/") ? "Scene \(i)" : "\(family.uppercased()) \(i)"]
+                if family.hasPrefix("cue/") { fields += [4000, 0, 3000, 0, 2000, 0, 2000, 0, 2000, 0, false, 0, 100, "", "", "", 0, 0, 0, false, 0, false, "", 0, "Practice cue", "", false, -1] }
+                if family == "sub" { fields += ["Additive", "Proportional", true, false, true, false, "Normal", "3", "Hold", "3"] }
+                showData.receive(OSCMessage(address: "/eos/out/get/\(key)/list/0/\(fields.count)", parameters: fields))
+                if ["fp", "cp", "bp"].contains(family) {
+                    showData.receive(OSCMessage(address: "/eos/out/get/\(key)/channels/list/0/3", parameters: [i-1, "demo", "1 Thru 12"]))
+                }
+            }
+            return
+        }
+        guard ready else { return }
+        send("/eos/subscribe", [1]); send("/eos/get/\(family)/count")
+    }
+
+    private func receiveShowData(_ address: String, _ values: [Any]) {
+        let path = address.split(separator: "/").map(String.init)
+        if path.count == 5, Array(path.prefix(4)) == ["eos", "out", "get", "params"], let channel = Int(path[4]) {
+            fixtureParameters[channel] = EosFixtureParameter.parse(values)
+        }
+        showData.receive(OSCMessage(address: address, parameters: values))
+        if address.hasPrefix("/eos/out/get/"), address.hasSuffix("/count"), let count = values.first as? NSNumber {
+            let family = path.dropFirst(3).dropLast().joined(separator: "/")
+            guard requestedFamilies.contains(family) else { return }
+            let total = max(0, min(10000, count.intValue)); showCounts[family] = total
+            let generation = queryGeneration
+            let familyGeneration = UUID(); familyGenerations[family] = familyGeneration
+            for index in 0..<total {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.025) { [weak self] in
+                    guard let self, self.ready, !self.demoMode, generation == self.queryGeneration, self.familyGenerations[family] == familyGeneration else { return }
+                    self.send("/eos/get/\(family)/index/\(index)")
+                }
+            }
+        }
+        if address.hasPrefix("/eos/out/notify/") {
+            let candidates = requestedFamilies.filter { family in address.hasPrefix("/eos/out/notify/" + family + "/") }
+            for family in candidates {
+                refreshWork[family]?.cancel()
+                let work = DispatchWorkItem { [weak self] in self?.requestShow(family) }
+                refreshWork[family] = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            }
+        }
+        if address == "/eos/out/event/show/loaded" || address == "/eos/out/event/show/cleared" {
+            clearShowSession()
+            for family in requestedFamilies { requestShow(family) }
+        }
     }
 
     func haptic(continuous: Bool = false) {
@@ -1348,10 +1450,17 @@ private struct NativeFixtureDetailsView: View {
                                 if let address = fixture.address, address > 0 { field("Absolute address", String(address)) }
                                 if let level = fixture.level { field("Reported intensity", "\(Int(level))%") }
                                 if !fixture.gel.isEmpty { field("Gel", fixture.gel) }
+                                if let count = fixture.partCount { field("Channel parts", String(count)) }
+                                ForEach(Array(fixture.textFields.enumerated()), id: \.offset) { index, text in
+                                    if !text.isEmpty { field("Text \(index + 1)", text) }
+                                }
                                 if !fixture.notes.isEmpty { Text(fixture.notes).font(.subheadline).foregroundStyle(.secondary) }
                             }.deskCard()
                         }
                     }
+                }
+                ForEach(channels, id: \.self) { channel in
+                    NativeParameterInspector(channel: channel)
                 }
                 if selection.channels.count > 12 {
                     HStack { Button("Previous") { page -= 1; load() }.disabled(page == 0); Spacer(); Text("Page \(page+1)").font(.caption); Spacer(); Button("Next") { page += 1; load() }.disabled((page+1)*12 >= selection.channels.count) }
@@ -1433,6 +1542,7 @@ private struct NativeFadersView: View {
                 Picker("Fader bank", selection: $bank) {
                     ForEach(0..<4) { index in Text("\(index*10+1)–\(index*10+10)").tag(index) }
                 }.pickerStyle(.segmented)
+                NavigationLink { NativeShowBrowser(family: "sub", title: "Submasters") } label: { Label("Submaster details", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity, alignment: .leading).deskCard() }
                 grid
                 DisclosureGroup("Adjust selected faders") { controls }
             }.padding(16)
@@ -1515,11 +1625,9 @@ private struct NativePlaybackView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                HStack(spacing: 12) {
-                    Image(systemName: "list.bullet").foregroundStyle(DeskPalette.accent)
-                    Text("Cue List 1").font(.system(size: 15, weight: .medium))
-                    Spacer()
-                }.frame(maxWidth: .infinity, alignment: .leading).deskCard()
+                NavigationLink { NativeCueListsView() } label: {
+                    HStack { Label("Browse all cues", systemImage: "list.bullet"); Spacer(); Image(systemName: "chevron.right") }.deskCard()
+                }.buttonStyle(.plain)
 
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
@@ -1766,7 +1874,7 @@ private enum WheelCategory: String, CaseIterable, Identifiable {
     case all = "All"
     case position = "Position"
     case beam = "Beam"
-    case optics = "Optics"
+    case optics = "Gobos & optics"
     var id: String { rawValue }
 }
 
@@ -1781,19 +1889,20 @@ private struct NativeWheelsView: View {
         _category = State(initialValue: beamOnly ? .beam : .all)
     }
 
+    private var parameters: [EosFixtureParameter] { model.fixtureParameters[model.selectedChannels.first ?? 0] ?? [] }
     private var paramsForCategory: [String] {
-        switch category {
-        case .all:
-            return ["intens", "pan", "tilt", "zoom", "edge", "iris", "focus", "color_temp", "diffusn"]
-        case .position:
-            return ["pan", "tilt"]
-        case .beam:
-            return ["zoom", "edge", "iris", "focus"]
-        case .optics:
-            return ["color_temp", "tint", "diffusn", "gobo_rot"]
+        let names = parameters.map(\.oscName)
+        let wheelNames = model.feedback.filter { $0.key.hasPrefix("/eos/out/active/wheel/") }.values.compactMap { ($0.first as? String)?.lowercased().replacingOccurrences(of: " ", with: "_") }
+        let available = names.isEmpty ? wheelNames + model.feedback.keys.filter { $0.hasPrefix("/eos/out/param/") }.compactMap { $0.split(separator: "/").last.map(String.init) } : names
+        return Array(Set(available)).sorted().filter { name in
+            switch category {
+            case .all: return true
+            case .position: return name == "pan" || name == "tilt"
+            case .beam: return !["pan", "tilt", "intens", "intensity"].contains(name) && !["red", "green", "blue", "cyan", "magenta", "yellow", "hue", "sat"].contains(name)
+            case .optics: return ["gobo", "prism", "shutter", "strobe", "frame", "blade", "thrust", "frost", "diffus"].contains(where: name.contains)
+            }
         }
     }
-    
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -1815,9 +1924,15 @@ private struct NativeWheelsView: View {
                     .frame(maxWidth: 160)
                 }
                 
+                if let channel = model.selectedChannels.first {
+                    HStack { Text("Channel \(channel) · Live").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Refresh") { model.requestParameters(channel) } }
+                    if model.selectedChannels.count > 1 { Text("Values show channel \(channel). Wheels adjust the console selection.").font(.caption).foregroundStyle(.secondary) }
+                }
+                if paramsForCategory.isEmpty { Text("Select a fixture on the console to see its supported controls.").font(.subheadline).foregroundStyle(.secondary).deskCard() }
                 ForEach(paramsForCategory, id: \.self) { param in
                     DeskWheel(param: param, fine: fine)
                 }
+                NavigationLink { NativeShowBrowser(family: beamOnly ? "bp" : "fp", title: beamOnly ? "Beam palettes" : "Focus palettes") } label: { Label(beamOnly ? "Beam palettes" : "Focus palettes", systemImage: "square.grid.2x2").frame(maxWidth: .infinity, alignment: .leading).deskCard() }
                 
                 if category == .all || category == .position {
                     HStack {
@@ -1838,6 +1953,9 @@ private struct NativeWheelsView: View {
             }.padding()
         }
         .navigationTitle(beamOnly ? "Beam & Optics" : "Movement")
+        .onAppear { if let channel = model.selectedChannels.first { model.requestParameters(channel) } }
+        .onChange(of: model.selectedChannels) { channels in if let channel = channels.first { model.requestParameters(channel) } }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in if model.ready, let channel = model.selectedChannels.first { model.requestParameters(channel) } }
         .onChange(of: fine) { _ in model.haptic() }
         .onChange(of: category) { _ in model.haptic() }
     }
@@ -1852,6 +1970,8 @@ private struct DeskWheel: View {
     @State private var lastSent = -Double.infinity
     @State private var gestureSession: UUID?
     
+    private var capability: EosFixtureParameter? { model.fixtureParameters[model.selectedChannels.first ?? 0]?.first { $0.oscName == param } }
+    private var readout: String { model.feedback["/eos/out/param/" + param]?.first.map { String(describing: $0) } ?? capability.map { String(format: "%.2f", $0.level) } ?? "Waiting for feedback" }
     private var title: String {
         switch param {
         case "intens": return "Intensity"
@@ -1865,7 +1985,7 @@ private struct DeskWheel: View {
         case "tint": return "Tint"
         case "diffusn": return "Diffusion"
         case "gobo_rot": return "Gobo Rot"
-        default: return param.capitalized
+        default: return param.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
     
@@ -1874,10 +1994,15 @@ private struct DeskWheel: View {
             HStack {
                 Button("Min") { tap("/eos/param/\(param)/min") }
                 Spacer()
-                VStack(spacing: 2) { Text(title).font(.subheadline.weight(.medium)); Text(model.feedback["/eos/out/param/" + param]?.first.map { String(describing: $0) } ?? "No parameter feedback").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                VStack(spacing: 2) { Text(title).font(.subheadline.weight(.medium)); Text(readout).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 Spacer()
                 Button("Max") { tap("/eos/param/\(param)/max") }
             }.font(.caption).tint(Color.gray)
+            HStack {
+                if let capability { Text(String(format: "Range %.2f to %.2f", capability.minimum, capability.maximum)).font(.caption2).foregroundStyle(.secondary) }
+                Spacer()
+                Button("Home") { tap("/eos/param/\(param)/home") }.font(.caption)
+            }
             HStack(spacing: 0) {
                 Button { adjust(-1) } label: { Image(systemName: "chevron.left").frame(width: 38, height: 52) }.accessibilityLabel("Decrease " + title)
                 GeometryReader { geometry in
@@ -1900,9 +2025,18 @@ private struct DeskWheel: View {
             }.buttonStyle(.plain).foregroundStyle(.secondary).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 10)).clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.08)) }
         }.padding(12).deskPanel(cornerRadius: 16)
+        .disabled(!model.ready || model.selectedChannels.isEmpty)
+        .onAppear { if !model.demoMode { model.send("/eos/subscribe/param/\(param)", [1]) } }
         .onChange(of: model.ready) { _ in previous = 0; residual = 0 }
     }
-    private func adjust(_ value: Int, continuous: Bool = false) { model.haptic(continuous: continuous); model.send("/eos/wheel/\(fine ? "fine" : "coarse")/\(param)", [value]) }
+    private func adjust(_ value: Int, continuous: Bool = false) {
+        model.haptic(continuous: continuous)
+        let wheel = model.feedback.first { entry in
+            entry.key.hasPrefix("/eos/out/active/wheel/") && (entry.value.first as? String)?.lowercased().replacingOccurrences(of: " ", with: "_") == param
+        }?.key.split(separator: "/").last.map(String.init)
+        if let wheel { model.send("/eos/active/wheel/\(fine ? "fine" : "coarse")/\(wheel)", [value]) }
+        else { model.send("/eos/wheel/\(fine ? "fine" : "coarse")/\(param)", [value]) }
+    }
     private func tap(_ address: String) { model.haptic(); model.tap(address) }
     private func flush(force: Bool = false) {
         guard model.ready, gestureSession == nil || gestureSession == model.session else { residual = 0; return }
@@ -2068,18 +2202,8 @@ private struct NativeColorView: View {
                     .accessibilityLabel("CIE color diagram").accessibilityHint("Use Hue and Saturation controls above for accessible color adjustment")
                 }.aspectRatio(0.8/0.9, contentMode: .fit)
                 Text(String(format: "CIE x %.3f · y %.3f", Double(xy.x), Double(xy.y))).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Color library").font(.headline)
-                    TextField("Search color palettes", text: $filter).padding(12).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 10))
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
-                        ForEach(1...32, id: \.self) { n in
-                            let label = model.text("/eos/out/ds/4/\(n)").isEmpty ? "Color \(n)" : model.text("/eos/out/ds/4/\(n)")
-                            if filter.isEmpty || label.localizedCaseInsensitiveContains(filter) {
-                                Button { model.haptic(); model.tap("/eos/ds/4/\(n)") } label: { Text(label).font(.caption).lineLimit(2).frame(maxWidth: .infinity, minHeight: 48) }.buttonStyle(DeskButtonStyle())
-                            }
-                        }
-                    }
-                }.deskCard()
+                NavigationLink { NativeShowBrowser(family: "cp", title: "Color palettes") } label: { Label("Color palettes", systemImage: "paintpalette").frame(maxWidth: .infinity, alignment: .leading).deskCard() }
+
             }.padding()
         }.navigationTitle("Color").onAppear {
             syncColorReadouts()
@@ -2254,5 +2378,151 @@ private struct NativeLegalView: View {
             Text("Open-source license").font(.headline)
             Text("MIT License\n\nCopyright (c) 2017 Dave Thwaites\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n").font(.caption)
         }.padding() }.navigationTitle("Privacy & licenses")
+    }
+}
+
+private struct NativeParameterInspector: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let channel: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("Channel \(channel) · Live parameters").font(.headline); Spacer(); Button { model.requestParameters(channel) } label: { Image(systemName: "arrow.clockwise") } }
+            if let parameters = model.fixtureParameters[channel], !parameters.isEmpty {
+                ForEach(parameters) { parameter in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(parameter.name.replacingOccurrences(of: "_", with: " "))
+                            Text(String(format: "%.2f to %.2f", parameter.minimum, parameter.maximum)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(String(format: "%.2f", parameter.level)).monospacedDigit()
+                    }.font(.subheadline)
+                    Divider()
+                }
+            } else { Text("Waiting for Get Params feedback. Requires Eos 3.2 or later.").font(.caption).foregroundStyle(.secondary) }
+        }.deskCard()
+        .onAppear { model.requestParameters(channel) }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in if model.ready { model.requestParameters(channel) } }
+    }
+}
+
+private struct NativeCueListsView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                NavigationLink("Cue List 1") { NativeShowBrowser(family: "cue/1", title: "Cue List 1") }.deskCard()
+                ForEach(model.showData.records.keys.filter { $0.hasPrefix("cuelist/") && $0.split(separator: "/").count == 2 && $0 != "cuelist/1" }.sorted(), id: \.self) { key in
+                    let number = String(key.split(separator: "/").last ?? "1")
+                    NavigationLink { NativeShowBrowser(family: "cue/" + number, title: "Cue List " + number) } label: {
+                        Text("Cue List " + number + " · " + ((model.showData.records[key]?[2] as? String) ?? ""))
+                    }.deskCard()
+                }
+                Button("Refresh cue lists") { model.requestShow("cuelist") }
+            }.padding()
+        }.navigationTitle("Cue lists").onAppear { model.requestShow("cuelist") }
+    }
+}
+
+private struct NativeShowBrowser: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let family: String
+    let title: String
+    @State private var search = ""
+    private var keys: [String] {
+        let length = family.split(separator: "/").count + (family.hasPrefix("cue/") ? 2 : 1)
+        return model.showData.records.keys.filter { key in
+            key.hasPrefix(family + "/") && key.split(separator: "/").count == length &&
+            (search.isEmpty || (key + " " + ((model.showData.records[key]?[2] as? String) ?? "")).localizedCaseInsensitiveContains(search))
+        }.sorted { $0.compare($1, options: .numeric) == .orderedAscending }
+    }
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                TextField("Search number or label", text: $search).padding(12).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 12))
+                HStack {
+                    Text("\(keys.count) received" + (model.showCounts[family].map { " · \($0) reported" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                    Spacer(); Button("Refresh") { model.requestShow(family) }.disabled(!model.ready)
+                }
+                if keys.isEmpty { Text(model.showCounts[family] == 0 ? "No stored items in this show." : "Waiting for console show data…").foregroundStyle(.secondary).padding(.vertical) }
+                ForEach(keys, id: \.self) { key in
+                    NavigationLink { NativeShowItemDetails(key: key) } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(displayNumber(key)).font(.caption).foregroundStyle(DeskPalette.accent)
+                                Text((model.showData.records[key]?[2] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Unlabeled").font(.headline)
+                                if family.hasPrefix("cue/") {
+                                    Text("Up " + duration(key, 3) + " · Down " + duration(key, 5)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }.deskCard()
+                    }.buttonStyle(.plain)
+                }
+            }.padding()
+        }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        .onAppear { model.requestShow(family) }
+        .onChange(of: model.ready) { ready in if ready { model.requestShow(family) } }
+    }
+    private func displayNumber(_ key: String) -> String {
+        let p = key.split(separator: "/")
+        if family.hasPrefix("cue/"), p.count == 4 { return "Cue \(p[2])" + (p[3] == "0" ? "" : " · Part \(p[3])") }
+        return "\(title) · \(p.last ?? "")"
+    }
+    private func duration(_ key: String, _ index: Int) -> String { (model.showData.records[key]?[index] as? NSNumber).map { String(format: "%.1fs", $0.doubleValue / 1000) } ?? "—" }
+}
+
+private struct NativeShowItemDetails: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let key: String
+    private var fields: [Int: Any] { model.showData.records[key] ?? [:] }
+    private var family: String { String(key.split(separator: "/").first ?? "") }
+    private var number: String { String(key.split(separator: "/").dropFirst().first ?? "") }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(value(2).isEmpty ? "Unlabeled" : value(2)).font(.title2.weight(.semibold))
+                Text(key.replacingOccurrences(of: "/", with: " · ")).font(.subheadline).foregroundStyle(.secondary)
+                if family == "cue" {
+                    VStack(spacing: 12) {
+                        ForEach([3, 5, 7, 9, 11], id: \.self) { index in
+                            detail([3: "Up", 5: "Down", 7: "Focus", 9: "Color", 11: "Beam"][index] ?? "", milliseconds(index) + " · delay " + milliseconds(index + 1))
+                        }
+                        detail("Parts", value(26)); detail("Notes", value(27)); detail("Scene", value(28))
+                        detail("Mark", value(16)); detail("Block", value(17)); detail("Assert", value(18))
+                        detail("Follow", milliseconds(20)); detail("Hang", milliseconds(21))
+                    }.deskCard()
+                    Button("Go to this cue") {
+                        let parts = key.split(separator: "/")
+                        if parts.count == 4 { model.goToCue(String(parts[2]), list: Int(parts[1])) }
+                    }.buttonStyle(.bordered).disabled(!model.ready)
+                } else if family == "sub" {
+                    VStack(spacing: 12) {
+                        detail("Mode", value(3)); detail("Fader mode", value(4)); detail("HTP", boolean(5))
+                        detail("Exclusive", boolean(6)); detail("Background", boolean(7)); detail("Restore", boolean(8))
+                        detail("Priority", value(9)); detail("Up", value(10)); detail("Dwell", value(11)); detail("Down", value(12))
+                    }.deskCard()
+                } else {
+                    detail("Absolute", boolean(3)); detail("Locked", boolean(4))
+                    Button("Apply to console selection") {
+                        let command = ["fp": "Focus Palette", "cp": "Color Palette", "bp": "Beam Palette"][family] ?? ""
+                        guard !command.isEmpty else { return }
+                        model.send("/eos/newcmd", ["\(command) \(number) Enter"])
+                    }.buttonStyle(.bordered).disabled(!model.ready || model.selectedChannels.isEmpty)
+                }
+                ForEach(["channels", "byType", "fx"], id: \.self) { suffix in
+                    let list = model.showData.records[key + "/" + suffix] ?? [:]
+                    if !list.isEmpty {
+                        detail(suffix == "byType" ? "By type channels" : suffix.capitalized, list.keys.sorted().filter { $0 >= 2 }.map { String(describing: list[$0]!) }.joined(separator: ", "))
+                    }
+                }
+            }.padding()
+        }.navigationTitle("Details").navigationBarTitleDisplayMode(.inline)
+    }
+    private func value(_ index: Int) -> String { fields[index].map { String(describing: $0) } ?? "" }
+    private func boolean(_ index: Int) -> String { (fields[index] as? NSNumber).map { $0.boolValue ? "Yes" : "No" } ?? "Not reported" }
+    private func milliseconds(_ index: Int) -> String { (fields[index] as? NSNumber).map { String(format: "%.1fs", $0.doubleValue / 1000) } ?? "Not reported" }
+    private func detail(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(); Text(value.isEmpty ? "—" : value).multilineTextAlignment(.trailing) }.font(.subheadline)
     }
 }
