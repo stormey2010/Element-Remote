@@ -414,7 +414,7 @@ public struct EosShowData {
               let marker = p.firstIndex(of: "list"), marker + 2 == p.count-1,
               let offset = Int(p[marker+1]), let count = Int(p[marker+2]),
               offset >= 0, count >= 0, offset + count <= 4096, count == message.parameters.count else { return nil }
-        guard ["cue", "cuelist", "fp", "cp", "bp", "sub", "snap"].contains(p[3]) else { return nil }
+        guard ["cue", "cuelist", "fp", "cp", "bp", "sub", "snap", "fx", "preset"].contains(p[3]) else { return nil }
         let key = p[3..<marker].joined(separator: "/")
         var fields = records[key] ?? [:]
         for (index, value) in message.parameters.enumerated() { fields[offset+index] = value }
@@ -455,5 +455,64 @@ public enum EosCreativeCommands {
     public static func xyz(x: Double, y: Double, z: Double) throws -> OSCMessage {
         guard [x,y,z].allSatisfy({ $0.isFinite && abs($0) <= 1000 }) else { throw OSCWireError.invalid("Enter coordinates in meters within ±1000") }
         return OSCMessage(address: "/eos/xyz", parameters: [x,y,z])
+    }
+}
+
+public struct EosProcessorHealth: Identifiable {
+    public let id: Int
+    public let backup: Int
+    public let host: Bool
+    public let status: Int
+    public let label: String
+    public let name: String
+    public let model: String
+    public let ip: String
+    public let universes: String
+    public var statusText: String { [0:"Online",1:"Offline",2:"Warning",3:"Critical"][status] ?? "Unknown" }
+    public static func parse(_ values: [Any]) -> EosProcessorHealth? {
+        guard values.count == 9, let id = values[0] as? NSNumber, let backup = values[1] as? NSNumber,
+              let host = values[2] as? NSNumber, let status = values[3] as? NSNumber,
+              let label = values[4] as? String, let name = values[5] as? String,
+              let model = values[6] as? String, let ip = values[7] as? String, let universes = values[8] as? String else { return nil }
+        return EosProcessorHealth(id:id.intValue,backup:backup.intValue,host:host.boolValue,status:status.intValue,label:label,name:name,model:model,ip:ip,universes:universes)
+    }
+}
+
+public enum EosCapabilities {
+    public static func userSelection(independent: Bool) -> OSCMessage {
+        independent ? OSCMessage(address:"/eos/user/auto",parameters:[]) : OSCMessage(address:"/eos/user",parameters:[-1])
+    }
+    public static func supportsHealthSubscriptions(_ version: String) -> Bool {
+        let components = version.split(separator:".").prefix(3).map { Int($0) ?? -1 }
+        guard components.count == 3, components.allSatisfy({ $0 >= 0 }) else { return false }
+        return !components.lexicographicallyPrecedes([3,3,5])
+    }
+}
+
+public struct EosParameterComparison: Identifiable {
+    public let id: String
+    public let left: EosFixtureParameter?
+    public let right: EosFixtureParameter?
+    public var differs: Bool {
+        guard let left, let right else { return true }
+        return abs(left.level-right.level) > 0.001 || left.minimum != right.minimum || left.maximum != right.maximum
+    }
+    public static func rows(_ left: [EosFixtureParameter], _ right: [EosFixtureParameter]) -> [EosParameterComparison] {
+        let a = Dictionary(left.map { ($0.oscName,$0) },uniquingKeysWith: { first,_ in first })
+        let b = Dictionary(right.map { ($0.oscName,$0) },uniquingKeysWith: { first,_ in first })
+        return Set(a.keys).union(b.keys).sorted().map { EosParameterComparison(id:$0,left:a[$0],right:b[$0]) }
+    }
+}
+
+public struct EosConsoleUser: Identifiable {
+    public let id: Int
+    public let console: String
+    public let name: String
+    public static func parse(_ values: [Any]) -> [EosConsoleUser] {
+        guard let stride = values.first as? NSNumber, stride.intValue == 3, (values.count-1) % 3 == 0 else { return [] }
+        return Swift.stride(from:1,to:values.count,by:3).compactMap { index in
+            guard let id = values[index] as? NSNumber, let console = values[index+1] as? String, let name = values[index+2] as? String else { return nil }
+            return EosConsoleUser(id:id.intValue,console:console,name:name)
+        }
     }
 }

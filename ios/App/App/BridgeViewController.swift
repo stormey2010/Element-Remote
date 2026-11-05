@@ -542,6 +542,13 @@ struct CueHistoryItem: Identifiable, Equatable {
     @Published var session = UUID()
     @Published var selection: Set<Int> = []
     @Published var fixtures: [String: EosFixtureRecord] = [:]
+    @Published var emitters: [Int: [EosFixtureParameter]] = [:]
+    @Published var processors: [Int: EosProcessorHealth] = [:]
+    @Published var healthReceivedAt: Date?
+    @Published var processorCount: Int?
+    private var pendingProcessorHealth: [Int:EosProcessorHealth]?
+    @Published var independentUser = UserDefaults.standard.bool(forKey: "element.independentUser")
+    @Published var oscUser: Int?
     @Published var fixtureParameters: [Int: [EosFixtureParameter]] = [:]
     @Published var showData = EosShowData()
     @Published var requestedFamilies: Set<String> = []
@@ -586,7 +593,7 @@ struct CueHistoryItem: Identifiable, Equatable {
                     if self.ready != nextReady { self.session = UUID() }
                     let becameReady = !self.ready && nextReady
                     self.ready = nextReady
-                    if becameReady { for family in self.requestedFamilies { self.requestShow(family) } }
+                    if becameReady { self.applyUserMode(); for family in self.requestedFamilies { self.requestShow(family) } }
                     self.diagnostic = message["error"] as? String ?? ""
                     let denied = message["localNetworkDenied"] as? Bool ?? false
                     if denied && !self.networkDenied { self.error = "iOS blocked Local Network access. Enable Element Remote in Settings → Privacy & Security → Local Network, then retry." }
@@ -681,7 +688,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             isCueFading = false
             if reconnect { connection.testConnection() }
         }
-        if enabled { syncPracticeDesk() }
+        if enabled { syncPracticeDesk(); oscUser = independentUser ? 2 : 1 }
     }
 
     private var bumpTokens: [Int: UUID] = [:]
@@ -725,6 +732,10 @@ struct CueHistoryItem: Identifiable, Equatable {
         if address == "/eos/out/cmd" || (address.hasPrefix("/eos/out/user/") && address.hasSuffix("/cmd")) {
             self.commandLine = values.first as? String ?? ""
             self.commandError = (values.dropFirst().first as? NSNumber)?.intValue == 1
+        }
+        if address == "/eos/out/get/chans", let selection = values.first as? String {
+            activeChannels = selection
+            if let context = try? EosChannelSelection(selection.replacingOccurrences(of:",",with:" + ").replacingOccurrences(of:"-",with:" Thru ")) { selectedChannels = context.channels }
         }
         if address == "/eos/out/active/chan" {
             activeChannels = values.map { String(describing: $0) }.joined(separator: " ")
@@ -1016,7 +1027,36 @@ struct CueHistoryItem: Identifiable, Equatable {
     private func clearShowSession() {
         queryGeneration = UUID(); familyGenerations = [:]
         refreshWork.values.forEach { $0.cancel() }; refreshWork = [:]
-        showData = EosShowData(); showCounts = [:]; fixtureParameters = [:]
+        showData = EosShowData(); showCounts = [:]; fixtureParameters = [:]; emitters = [:]; processors = [:]; healthReceivedAt = nil; processorCount = nil; pendingProcessorHealth = nil; oscUser = nil
+    }
+
+    func applyUserMode() {
+        UserDefaults.standard.set(independentUser, forKey:"element.independentUser")
+        session = UUID(); selectedChannels = []; activeChannels = "No channels selected"; commandLine = "Waiting for user feedback…"; commandError = false; movementAvailable = false; colorAvailable = false; fixtureParameters = [:]; emitters = [:]; oscUser = nil
+        feedback = feedback.filter { !$0.key.hasPrefix("/eos/out/param/") && !$0.key.hasPrefix("/eos/out/active/") && !$0.key.hasPrefix("/eos/out/color/") }
+        if demoMode { oscUser = independentUser ? 2 : 1; return }
+        guard ready else { return }
+        send(EosCapabilities.userSelection(independent:independentUser))
+        send("/eos/get/chans"); send("/eos/get/userlist")
+    }
+    func requestEmitters(_ channel: Int) {
+        guard ready else { return }
+        if demoMode {
+            let names = ["Red","Green","Blue","Lime","Amber"]
+            var values: [Any] = ["ETC","Lustr"]
+            for name in names { values += [name,practiceDesk.parameters[channel]?[name.lowercased()] ?? 50,0,100] }
+            emitters[channel] = EosFixtureParameter.parse(values); return
+        }
+        send("/eos/get/emitters/\(channel)")
+    }
+    func requestDiagnostics() {
+        guard ready else { return }
+        if demoMode {
+            if let processor = EosProcessorHealth.parse([1,-1,true,0,"Practice Element","Element","Element Classic","192.168.1.100","1>2"]) { processors = [processor.id:processor] }
+            healthReceivedAt = Date(); processorCount = 1; oscUser = independentUser ? 2 : 1
+            feedback["/eos/out/get/userlist"] = [3,1,"Element","Practice desk"]; return
+        }
+        send("/eos/get/processors"); send("/eos/get/session"); send("/eos/get/userlist"); send("/eos/get/version")
     }
 
     func requestParameters(_ channel: Int) {
@@ -1033,7 +1073,7 @@ struct CueHistoryItem: Identifiable, Equatable {
     }
 
     func requestShow(_ family: String, reset: Bool = true) {
-        guard ["cuelist", "fp", "cp", "bp", "sub", "snap"].contains(family) || family.range(of: #"^cue/[0-9]+$"#, options: .regularExpression) != nil else { return }
+        guard ["cuelist", "fp", "cp", "bp", "sub", "snap", "fx", "preset"].contains(family) || family.range(of: #"^cue/[0-9]+$"#, options: .regularExpression) != nil else { return }
         requestedFamilies.insert(family)
         if reset { showData.clear(family); showCounts[family] = nil }
         if demoMode {
@@ -1057,6 +1097,20 @@ struct CueHistoryItem: Identifiable, Equatable {
 
     private func receiveShowData(_ address: String, _ values: [Any]) {
         let path = address.split(separator: "/").map(String.init)
+        if address == "/eos/out/user" { oscUser = (values.first as? NSNumber)?.intValue }
+        if address == "/eos/out/get/processors" {
+            if values.count == 1, let count = values.first as? NSNumber, (0...512).contains(count.intValue) {
+                processorCount = count.intValue; pendingProcessorHealth = [:]
+                if count.intValue == 0 { processors = [:]; pendingProcessorHealth = nil; healthReceivedAt = Date() }
+            }
+            if let processor = EosProcessorHealth.parse(values) {
+                if pendingProcessorHealth != nil {
+                    pendingProcessorHealth?[processor.id] = processor
+                    if pendingProcessorHealth?.count == processorCount { processors = pendingProcessorHealth ?? [:]; pendingProcessorHealth = nil; healthReceivedAt = Date() }
+                } else { processors[processor.id] = processor; healthReceivedAt = Date() }
+            }
+        }
+        if path.count == 5, Array(path.prefix(4)) == ["eos", "out", "get", "emitters"], let channel = Int(path[4]) { emitters[channel] = EosFixtureParameter.parse(values) }
         if path.count == 5, Array(path.prefix(4)) == ["eos", "out", "get", "params"], let channel = Int(path[4]) {
             fixtureParameters[channel] = EosFixtureParameter.parse(values)
         }
@@ -1767,6 +1821,11 @@ private struct NativeConnectionView: View {
                     else { discovery.start() }
                 }.disabled(model.demoMode)
             } header: { Text("Nearby consoles") } footer: { Text("Checks nearby Wi-Fi addresses on TCP 3032 and advertised OSC services. Other subnets or ports may need Add console.") }
+            Section {
+                Toggle("Independent app selection", isOn: Binding(get:{ model.independentUser },set:{ model.independentUser = $0; model.applyUserMode() }))
+                if let user = model.oscUser { LabeledContent("OSC user",value:String(user)) }
+                NavigationLink("Console health & diagnostics") { NativeConsoleHealthView() }
+            } header: { Text("Console user") } footer: { Text("Use a separate Eos user so channel selection and command entry stay independent from the board operator. Live output is still shared. Changing this clears the app’s selection.") }
             Section("Display & controls") {
                 Toggle("Night vision", isOn: $nightVision)
                 Toggle("Haptics", isOn: $haptics)
@@ -1886,6 +1945,10 @@ private struct NativeMoreView: View {
                     row("Console Workspaces", "Recall console display snapshots", "rectangle.3.group") { NativeShowBrowser(family: "snap", title: "Console snapshots") }
                 }
                 section("Utilities") {
+                    row("Compare Fixtures", "Read-only parameter differences", "rectangle.split.2x1") { NativeFixtureCompareView() }
+                    rule
+                    row("Console Health", "Connection, processor status and users", "heart.text.square") { NativeConsoleHealthView() }
+                    rule
                     row("Patch", "Fixture information", "point.3.connected.trianglepath.dotted") { NativePatchView() }
                     rule
                     row("Fixture QR", "Scan or share a channel label", "qrcode.viewfinder") { NativeFixtureQRView() }
@@ -2259,6 +2322,7 @@ private struct NativeColorView: View {
                     .accessibilityLabel("CIE color diagram").accessibilityHint("Use Hue and Saturation controls above for accessible color adjustment")
                 }.aspectRatio(0.8/0.9, contentMode: .fit)
                 Text(String(format: "CIE x %.3f · y %.3f", Double(xy.x), Double(xy.y))).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                NavigationLink { NativeEmitterView() } label: { Label("Individual LED emitters",systemImage:"slider.horizontal.3").frame(maxWidth:.infinity,alignment:.leading).deskCard() }
                 NavigationLink { NativeShowBrowser(family: "cp", title: "Color palettes") } label: { Label("Color palettes", systemImage: "paintpalette").frame(maxWidth: .infinity, alignment: .leading).deskCard() }
 
             }.padding()
@@ -2501,6 +2565,19 @@ private struct NativeShowBrowser: View {
                     Text("\(keys.count) received" + (model.showCounts[family].map { " · \($0) reported" } ?? "")).font(.caption).foregroundStyle(.secondary)
                     Spacer(); Button("Refresh") { model.requestShow(family) }.disabled(!model.ready)
                 }
+                if family.hasPrefix("cue/"), let list = family.split(separator:"/").last,
+                   let fields = model.showData.records["cuelist/" + list] {
+                    DisclosureGroup("Cue list configuration") {
+                        VStack(alignment:.leading,spacing:8) {
+                            Text("Playback: " + ((fields[3] as? String) ?? "Not reported"))
+                            Text("Fader mode: " + ((fields[4] as? String) ?? "Not reported"))
+                            ForEach([5,6,7,8,9,10,12],id:\.self) { index in
+                                if let flag = fields[index] as? NSNumber { Text(([5:"Independent",6:"HTP",7:"Assert",8:"Block",9:"Background",10:"Solo",12:"Out-of-sequence sync"][index] ?? "") + ": " + (flag.boolValue ? "On" : "Off")) }
+                            }
+                            if let links = model.showData.records["cuelist/" + list + "/links"] { Text("Linked lists: " + links.keys.sorted().filter { $0 >= 2 }.compactMap { links[$0].map { String(describing:$0) } }.joined(separator:", ")) }
+                        }.font(.caption).foregroundStyle(.secondary).padding(.top,8)
+                    }.deskCard()
+                }
                 if keys.isEmpty { Text(model.showCounts[family] == 0 ? "No stored items in this show." : "Waiting for console show data…").foregroundStyle(.secondary).padding(.vertical) }
                 ForEach(keys, id: \.self) { key in
                     NavigationLink { NativeShowItemDetails(key: key) } label: {
@@ -2518,7 +2595,7 @@ private struct NativeShowBrowser: View {
                 }
             }.padding()
         }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-        .onAppear { model.requestShow(family) }
+        .onAppear { if model.showCounts[family] == nil { model.requestShow(family) } }
         .onChange(of: model.ready) { ready in if ready { model.requestShow(family) } }
     }
     private func displayNumber(_ key: String) -> String {
@@ -2553,6 +2630,9 @@ private struct NativeShowItemDetails: View {
                         let parts = key.split(separator: "/")
                         if parts.count == 4 { model.goToCue(String(parts[2]), list: Int(parts[1])) }
                     }.buttonStyle(.bordered).disabled(!model.ready)
+                } else if family == "fx" {
+                    Text("Applies this stored effect to the selected channels.").font(.subheadline).foregroundStyle(.secondary)
+                    Button("Apply effect") { model.send("/eos/newcmd",["Effect \(number) Enter"]) }.buttonStyle(.borderedProminent).disabled(!model.ready || model.selectedChannels.isEmpty)
                 } else if family == "snap" {
                     Text("Restores the console’s display layout. This does not restore a lighting look.").font(.subheadline).foregroundStyle(.secondary)
                     Button("Recall console workspace") { model.send("/eos/snap/\(number)/fire") }.buttonStyle(.borderedProminent).disabled(!model.ready)
@@ -2565,7 +2645,7 @@ private struct NativeShowItemDetails: View {
                 } else {
                     detail("Absolute", boolean(3)); detail("Locked", boolean(4))
                     Button("Apply to console selection") {
-                        let command = ["fp": "Focus Palette", "cp": "Color Palette", "bp": "Beam Palette"][family] ?? ""
+                        let command = ["fp": "Focus Palette", "cp": "Color Palette", "bp": "Beam Palette", "preset":"Preset"][family] ?? ""
                         guard !command.isEmpty else { return }
                         model.send("/eos/newcmd", ["\(command) \(number) Enter"])
                     }.buttonStyle(.bordered).disabled(!model.ready || model.selectedChannels.isEmpty)
@@ -2612,6 +2692,8 @@ private struct NativeCreativeView: View {
                 }.disabled(!model.ready || channels.isEmpty || (parameter == "intens" && (![start,end].allSatisfy { (0...100).contains($0) })))
             }
             Section("Stored effects") {
+                NavigationLink("Browse named effects") { NativeShowBrowser(family:"fx",title:"Effects") }
+                NavigationLink("Browse presets") { NativeShowBrowser(family:"preset",title:"Presets") }
                 TextField("Effect number", text: $effect).keyboardType(.numberPad)
                 Button("Apply effect to selection") { model.send("/eos/newcmd", ["Effect \(effect) Enter"]) }
                     .disabled(!model.ready || channels.isEmpty || (Int(effect).map { !(1...999999).contains($0) } ?? true))
@@ -2875,4 +2957,153 @@ private struct NativeShowControlView: View {
             connection.stateUpdateHandler = nil; connection.cancel(); sending = false; status = "QLab connection timed out. No linked lighting cue was sent."
         }
     }
+}
+
+private struct NativeFixtureCompareView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var left = "1"
+    @State private var right = "2"
+    @State private var onlyDifferences = true
+    private var a: Int? { valid(left) }
+    private var b: Int? { valid(right) }
+    private var rows: [EosParameterComparison] {
+        guard let a, let b, let first = model.fixtureParameters[a], let second = model.fixtureParameters[b] else { return [] }
+        return EosParameterComparison.rows(first,second).filter { !onlyDifferences || $0.differs }
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:16) {
+                VStack(alignment:.leading,spacing:12) {
+                    Text("Compare live parameters").font(.headline)
+                    HStack { channelField("Channel A",value:$left); Image(systemName:"arrow.left.arrow.right").foregroundStyle(DeskPalette.accent); channelField("Channel B",value:$right) }
+                    Toggle("Only differences",isOn:$onlyDifferences)
+                    Button("Refresh comparison") { refresh() }.disabled(!model.ready || a == nil || b == nil)
+                    Text("Read-only. This does not select channels or change output. Different fixture profiles may have different parameter ranges.").font(.caption).foregroundStyle(.secondary)
+                }.deskCard()
+                if !model.ready { Label("Disconnected · cached values may be stale",systemImage:"wifi.slash").font(.caption).foregroundStyle(.orange) }
+                if let a, let b, model.fixtureParameters[a] != nil, model.fixtureParameters[b] != nil {
+                    if rows.isEmpty { Text(onlyDifferences ? "No differences in the reported parameters." : "No parameters reported.").foregroundStyle(.secondary).deskCard() }
+                    ForEach(rows) { row in
+                        VStack(alignment:.leading,spacing:10) {
+                            HStack { Text((row.left?.name ?? row.right?.name ?? row.id).replacingOccurrences(of:"_",with:" ")).font(.headline); Spacer(); if row.differs { Image(systemName:"circle.lefthalf.filled").foregroundStyle(DeskPalette.accent) } }
+                            HStack(alignment:.top) { reading(row.left,channel:a); Spacer(); reading(row.right,channel:b) }
+                        }.deskCard()
+                    }
+                } else { Text(a == nil || b == nil ? "Enter two valid channel numbers." : "Waiting for fixture replies. Get Params requires Eos 3.2 or later.").font(.subheadline).foregroundStyle(.secondary).deskCard() }
+            }.padding()
+        }.navigationTitle("Compare Fixtures")
+        .onAppear { if let first = model.selectedChannels.first { left = String(first) }; if model.selectedChannels.count > 1 { right = String(model.selectedChannels[1]) }; refresh() }
+        .onChange(of:left) { _ in refresh() }.onChange(of:right) { _ in refresh() }
+        .onReceive(Timer.publish(every:3,on:.main,in:.common).autoconnect()) { _ in refresh() }
+    }
+    private func valid(_ text:String)->Int? { Int(text).flatMap { (1...999999).contains($0) ? $0 : nil } }
+    private func refresh() { guard model.ready, let a, let b else { return }; model.requestParameters(a); if b != a { model.requestParameters(b) } }
+    private func channelField(_ title:String,value:Binding<String>)->some View { VStack(alignment:.leading) { Text(title).font(.caption).foregroundStyle(.secondary); TextField(title,text:value).keyboardType(.numberPad).textFieldStyle(.roundedBorder) } }
+    private func reading(_ parameter:EosFixtureParameter?,channel:Int)->some View {
+        VStack(alignment:.leading,spacing:4) {
+            Text("Channel \(channel)").font(.caption).foregroundStyle(.secondary)
+            if let parameter { Text(String(format:"%.2f",parameter.level)).font(.title3.monospacedDigit()); Text(String(format:"Range %.2f to %.2f",parameter.minimum,parameter.maximum)).font(.caption2).foregroundStyle(.secondary) }
+            else { Text("Not supported").font(.subheadline).foregroundStyle(.secondary) }
+        }
+    }
+}
+
+private struct NativeEmitterView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    private var channel: Int? { model.selectedChannels.first }
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:14) {
+                if let channel {
+                    HStack { Text("Channel \(channel)").font(.title2.weight(.semibold)); Spacer(); Button("Refresh") { model.requestEmitters(channel) }.disabled(!model.ready) }
+                    Text("Adjusts this channel only. Levels and ranges come from the fixture’s emitter list.").font(.caption).foregroundStyle(.secondary)
+                    if !model.ready { Label("Disconnected · values may be stale",systemImage:"wifi.slash").font(.caption).foregroundStyle(.orange) }
+                    if let parameters = model.emitters[channel], !parameters.isEmpty {
+                        ForEach(parameters) { parameter in NativeEmitterSlider(channel:channel,parameter:parameter).id("\(channel)/\(parameter.name)") }
+                    } else { Text("No emitter data received. Select an LED fixture and refresh. Requires Eos 3.2 or later.").font(.subheadline).foregroundStyle(.secondary).deskCard() }
+                } else { ContentUnavailableViewCompat(title:"Select an LED fixture",text:"Choose a channel on the console or in Quick Control to see its individual emitters.",symbol:"lightbulb") }
+            }.padding()
+        }.navigationTitle("LED Emitters")
+        .onAppear { refresh() }.onChange(of:channel) { _ in refresh() }
+        .onReceive(Timer.publish(every:3,on:.main,in:.common).autoconnect()) { _ in refresh() }
+    }
+    private func refresh() { if model.ready, let channel { model.requestEmitters(channel) } }
+}
+
+private struct NativeEmitterSlider: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let channel: Int
+    let parameter: EosFixtureParameter
+    @State private var value: Double
+    @State private var dirty = false
+    @State private var editing = false
+    @State private var context: UUID?
+    init(channel:Int,parameter:EosFixtureParameter) { self.channel = channel; self.parameter = parameter; _value = State(initialValue:parameter.level) }
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack { Text(parameter.name.replacingOccurrences(of:"_",with:" ")).font(.headline); Spacer(); Text(String(format:"%.2f",value)).monospacedDigit().foregroundStyle(DeskPalette.accent) }
+            if parameter.minimum < parameter.maximum {
+                Slider(value:Binding(get:{ min(max(value,parameter.minimum),parameter.maximum) },set:{ value = $0; dirty = true; if context == nil { context = model.session } }),in:parameter.minimum...parameter.maximum,onEditingChanged:{ editing = $0; if $0 { context = model.session } else { apply() } }).accessibilityLabel(parameter.name)
+            }
+            HStack { Text(String(format:"Range %.2f to %.2f",parameter.minimum,parameter.maximum)).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Set") { apply() }.disabled(!dirty) }
+            Text(String(format:"Reported %.2f",parameter.level)).font(.caption2).foregroundStyle(.secondary)
+        }.deskCard().disabled(!model.ready || model.selectedChannels.first != channel)
+        .onChange(of:parameter.level) { level in if !editing && !dirty { value = level } }
+        .onChange(of:model.session) { _ in dirty = false; editing = false; context = nil; value = parameter.level }
+    }
+    private func apply() {
+        guard dirty, model.ready, model.selectedChannels.first == channel, context == model.session else { return }
+        model.send("/eos/chan/\(channel)/param/\(parameter.oscName)",[value]); dirty = false; context = nil
+    }
+}
+
+private struct ContentUnavailableViewCompat: View {
+    let title:String
+    let text:String
+    let symbol:String
+    var body: some View { VStack(spacing:12) { Image(systemName:symbol).font(.system(size:32)).foregroundStyle(DeskPalette.accent); Text(title).font(.headline); Text(text).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center) }.frame(maxWidth:.infinity).padding(.vertical,30).deskCard() }
+}
+
+private struct NativeConsoleHealthView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    private var users: [EosConsoleUser] { EosConsoleUser.parse(model.feedback["/eos/out/get/userlist"] ?? []) }
+    private var healthFresh: Bool { model.online && model.healthReceivedAt.map { Date().timeIntervalSince($0) < 15 } == true }
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:16) {
+                HStack { Label(model.online ? "Console responding" : "Console not verified",systemImage:model.online ? "checkmark.circle" : "wifi.slash").foregroundStyle(model.online ? Color.green : Color.orange); Spacer(); Button("Refresh") { model.requestDiagnostics() }.disabled(!model.ready) }
+                VStack(spacing:12) {
+                    field("Eos",model.softwareVersion.isEmpty ? "Not reported" : model.softwareVersion)
+                    field("Round trip",model.latency.map { "\($0) ms" } ?? "Not measured")
+                    field("OSC user",model.oscUser.map(String.init) ?? "Not reported")
+                    field("Selection",model.independentUser ? "Independent app user" : "Follow console user")
+                    if let date = model.healthReceivedAt { HStack { Text("Processor report").foregroundStyle(.secondary); Spacer(); Text(date,style:.time) }.font(.subheadline) }
+                }.deskCard()
+                VStack(alignment:.leading,spacing:8) {
+                    Text("Processor health").font(.headline)
+                    Text("Shows the console’s reported summary, not fixture temperatures or physical lamp feedback. Refreshes every five seconds while this page is open.").font(.caption).foregroundStyle(.secondary)
+                    Text(EosCapabilities.supportsHealthSubscriptions(model.softwareVersion) ? "Eos 3.3.5+ detected. This page uses documented processor queries for its health summary." : "Enhanced health subscriptions require Eos 3.3.5+. Available processor summaries are shown below.").font(.caption).foregroundStyle(.secondary)
+                    if model.processors.isEmpty { Text(model.processorCount == 0 ? "No processors reported." : "No health reply yet. This console or version may not expose processor status.").font(.subheadline).padding(.top,6) }
+                }.deskCard()
+                ForEach(model.processors.values.sorted { $0.id < $1.id }) { processor in
+                    VStack(alignment:.leading,spacing:12) {
+                        HStack { Text(processor.label.isEmpty ? processor.name : processor.label).font(.headline); Spacer(); Text(healthFresh ? processor.statusText : "Stale").font(.caption.weight(.semibold)).foregroundStyle(processor.status == 0 && healthFresh ? Color.green : Color.orange) }
+                        field("Device",processor.model); field("IP",processor.ip); field("Universes",processor.universes)
+                        field("Role",processor.host ? "Host" : "Processor")
+                        if processor.backup >= 0 { field("Backup ID",String(processor.backup)) }
+                    }.deskCard()
+                }
+                VStack(alignment:.leading,spacing:12) {
+                    Text("Connected users").font(.headline)
+                    if users.isEmpty { Text("No user list received.").font(.subheadline).foregroundStyle(.secondary) }
+                    ForEach(users) { user in HStack { Text("User \(user.id)").monospacedDigit(); Spacer(); VStack(alignment:.trailing) { Text(user.name); Text(user.console).font(.caption).foregroundStyle(.secondary) } }.font(.subheadline) }
+                    if !model.text("/eos/out/get/session").isEmpty { Divider(); Text("Reported session").font(.caption).foregroundStyle(.secondary); Text(model.text("/eos/out/get/session")).font(.caption.monospaced()).textSelection(.enabled) }
+                }.deskCard()
+            }.padding()
+        }.navigationTitle("Console Health")
+        .onAppear { model.requestDiagnostics() }
+        .onChange(of:model.ready) { ready in if ready { model.requestDiagnostics() } }
+        .onReceive(Timer.publish(every:5,on:.main,in:.common).autoconnect()) { _ in if model.ready { model.requestDiagnostics() } }
+    }
+    private func field(_ title:String,_ value:String)->some View { HStack(alignment:.top) { Text(title).foregroundStyle(.secondary); Spacer(); Text(value.isEmpty ? "Not reported" : value).multilineTextAlignment(.trailing) }.font(.subheadline) }
 }
