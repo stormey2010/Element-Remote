@@ -209,6 +209,17 @@ public struct EosChannelSelection: Equatable {
         guard (0...100).contains(percent) else { throw OSCWireError.invalid("Brightness must be between 0 and 100") }
         return OSCMessage(address: "/eos/newcmd", parameters: ["Chan \(expression) At \(percent) Enter"])
     }
+    public func parkIntensity(_ percent: Int) throws -> OSCMessage {
+        guard (0...100).contains(percent) else { throw OSCWireError.invalid("Park level must be between 0 and 100") }
+        return OSCMessage(address:"/eos/newcmd",parameters:["Chan \(expression) At \(percent) Park Enter"])
+    }
+    public func unpark(restoreBlind: Bool = false) -> [OSCMessage] {
+        [OSCMessage(address:"/eos/key/open_park_blind",parameters:[1.0]),
+         OSCMessage(address:"/eos/key/open_park_blind",parameters:[0.0]),
+         OSCMessage(address:"/eos/newcmd",parameters:["Chan \(expression) At Enter Enter"]),
+         OSCMessage(address:restoreBlind ? "/eos/key/blind" : "/eos/key/live",parameters:[1.0]),
+         OSCMessage(address:restoreBlind ? "/eos/key/blind" : "/eos/key/live",parameters:[0.0])]
+    }
     public func remDim() -> OSCMessage { OSCMessage(address: "/eos/newcmd", parameters: ["Chan \(expression) Rem_Dim Enter"]) }
     public func highlight() -> OSCMessage { OSCMessage(address: "/eos/newcmd", parameters: ["Chan \(expression) High Enter"]) }
     public func sneak() -> OSCMessage { OSCMessage(address: "/eos/newcmd", parameters: ["Chan \(expression) Sneak Enter"]) }

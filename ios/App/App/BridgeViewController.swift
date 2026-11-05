@@ -1012,6 +1012,20 @@ struct CueHistoryItem: Identifiable, Equatable {
         // Persist after each event so background suspension does not lose the log.
         if let data = try? JSONEncoder().encode(rehearsalEvents) { UserDefaults.standard.set(data, forKey: "element.rehearsalEvents") }
     }
+    func park(_ selection:EosChannelSelection, percent:Int) {
+        guard ready, let message = try? selection.parkIntensity(percent) else { return }
+        if demoMode { send(message); return }
+        let blind = (feedback["/eos/out/event/state"]?.first as? NSNumber)?.intValue == 0
+        var batch = [OSCMessage(address:"/eos/key/live",parameters:[1.0]),OSCMessage(address:"/eos/key/live",parameters:[0.0]),message]
+        if blind { batch += [OSCMessage(address:"/eos/key/blind",parameters:[1.0]),OSCMessage(address:"/eos/key/blind",parameters:[0.0])] }
+        sendBatch(batch)
+    }
+    func unpark(_ selection:EosChannelSelection) {
+        guard ready else { return }
+        if demoMode { practiceDesk.unpark(selection.channels); syncPracticeDesk(); return }
+        let blind = (feedback["/eos/out/event/state"]?.first as? NSNumber)?.intValue == 0
+        sendBatch(selection.unpark(restoreBlind:blind))
+    }
     func patchNote(channel: Int, part: Int, label: String, note: String) {
         guard ready else { return }
         if demoMode {
@@ -1402,6 +1416,9 @@ private struct NativeQuickControlView: View {
     @State private var validation = ""
     @State private var chosen: EosChannelSelection?
     @State private var showActions = false
+    @AppStorage("element.quick.recent") private var recentData = ""
+    private var parsed: EosChannelSelection? { try? EosChannelSelection(entry) }
+    private var recents: [String] { recentData.components(separatedBy:"|").filter { !$0.isEmpty } }
     private let keys = ["7", "8", "9", "Thru", "4", "5", "6", "+", "1", "2", "3", "−", "Clear", "0", "⌫"]
     var body: some View {
         ScrollView {
@@ -1409,14 +1426,21 @@ private struct NativeQuickControlView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("CHANNELS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(entry.isEmpty ? "Enter channel numbers" : entry).font(.system(size: 28, weight: .medium, design: .monospaced)).foregroundStyle(entry.isEmpty ? Color.secondary : Color.primary).frame(maxWidth: .infinity, minHeight: 60, alignment: .leading).accessibilityLabel("Channel selection: " + (entry.isEmpty ? "empty" : entry))
-                    Text("e.g. 42 or 1 Thru 5 + 12").font(.caption).foregroundStyle(.secondary)
+                    if let parsed { Label("\(parsed.channels.count) channel\(parsed.channels.count == 1 ? "" : "s")",systemImage:"checkmark.circle").font(.caption).foregroundStyle(DeskPalette.accent) }
+                    else { Text("Single channels, ranges, + and −").font(.caption).foregroundStyle(.secondary) }
+                    if !model.selectedChannels.isEmpty {
+                        Button("Use console selection") { entry = model.selectedChannels.map(String.init).joined(separator:" + "); validation = "" }.font(.subheadline)
+                    }
                 }.deskCard()
+                if !recents.isEmpty {
+                    ScrollView(.horizontal,showsIndicators:false) { HStack { ForEach(recents,id:\.self) { recent in Button(recent) { entry = recent; validation = "" }.buttonStyle(.bordered) } } }.accessibilityLabel("Recent channel selections")
+                }
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 4), spacing: 7) {
                     ForEach(keys, id: \.self) { key in
                         Button { edit(key) } label: { Text(key).font(.system(size: 22, weight: .medium)).frame(maxWidth: .infinity, minHeight: 64) }.buttonStyle(DeskButtonStyle()).accessibilityLabel(key == "⌫" ? "Backspace" : key)
                     }
                 }
-                Button { enter() } label: { Text("Enter").font(.title3.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 62) }.buttonStyle(DeskButtonStyle(accent: .green, prominent: true)).disabled(entry.isEmpty)
+                Button { enter() } label: { Text("Control channels").font(.title3.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 62) }.buttonStyle(DeskButtonStyle(accent: DeskPalette.accent, prominent: true)).disabled(parsed == nil)
                 if !validation.isEmpty { Text(validation).font(.subheadline).foregroundStyle(.orange) }
             }.padding()
         }.navigationDestination(isPresented: $showActions) { if let chosen { NativeChannelActionsView(selection: chosen) } }
@@ -1436,6 +1460,7 @@ private struct NativeQuickControlView: View {
         do {
             let selection = try EosChannelSelection(entry)
             model.haptic(); chosen = selection; validation = ""
+            recentData = ([selection.expression] + recents.filter { $0 != selection.expression }).prefix(6).joined(separator:"|")
             if model.ready { model.send(selection.select()) }
             showActions = true
         } catch { validation = error.localizedDescription }
@@ -1450,17 +1475,19 @@ private struct NativeChannelActionsView: View {
     @State private var levelSession: UUID?
     @State private var brightnessTouched = false
     @State private var details = false
+    @State private var parkLevel = 100
+    @State private var parkStatus = ""
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("CHANNELS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(selection.expression).font(.title2.monospacedDigit().weight(.semibold))
-                    Text("\(selection.channels.count) selected").font(.caption).foregroundStyle(.secondary)
+                    Text("\(selection.channels.count) channel\(selection.channels.count == 1 ? "" : "s") · actions target this list").font(.caption).foregroundStyle(.secondary)
                     if !model.ready { Text("Disconnected · connect to use quick actions").font(.subheadline).foregroundStyle(.orange) }
                 }.deskCard()
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("Brightness").font(.headline); Spacer(); Text(brightnessTouched ? "\(Int(brightness))%" : "Set a level").monospacedDigit().foregroundStyle(.secondary) }
+                    HStack { Text("Brightness").font(.headline); Spacer(); Text(brightnessTouched ? "\(Int(brightness))%" : "—").font(.system(size:34,weight:.medium,design:.rounded)).monospacedDigit().foregroundStyle(DeskPalette.accent) }
                     Slider(value: Binding(get: { brightness }, set: { value in brightness = value; applyLevel() }), in: 0...100, step: 1, onEditingChanged: { editing in
                         if editing { levelSession = model.session }
                         else { applyLevel(force: true); levelSession = nil; model.haptic() }
@@ -1472,6 +1499,16 @@ private struct NativeChannelActionsView: View {
                     }.buttonStyle(.bordered)
                     Text("Applies to all selected channels.").font(.caption).foregroundStyle(.secondary)
                 }.deskCard().disabled(!model.ready)
+                VStack(alignment:.leading,spacing:12) {
+                    Text("Park").font(.headline)
+                    Stepper("Intensity · \(parkLevel)%",value:$parkLevel,in:0...100,step:5)
+                    HStack(spacing:10) {
+                        Button("Park at \(parkLevel)%") { model.park(selection,percent:parkLevel); parkStatus = "Park command sent for channels " + selection.expression }.frame(maxWidth:.infinity,minHeight:48).buttonStyle(DeskButtonStyle(accent:DeskPalette.accent))
+                        Button("Unpark") { model.unpark(selection); parkStatus = "Unpark command sent for channels " + selection.expression }.frame(maxWidth:.infinity,minHeight:48).buttonStyle(DeskButtonStyle())
+                    }
+                    Text("Park locks intensity until released, including against cue playback and blackout. Unpark releases parked parameters for this channel list. Verify the Park display on the console.").font(.caption).foregroundStyle(.secondary)
+                    if !parkStatus.isEmpty { Text(parkStatus).font(.caption).foregroundStyle(DeskPalette.accent) }
+                }.deskCard().disabled(!model.ready)
                 HStack(spacing: 8) {
                     Button { model.haptic(); model.send(selection.remDim()) } label: { Label("Rem Dim", systemImage: "light.min").frame(maxWidth: .infinity, minHeight: 60) }.buttonStyle(DeskButtonStyle(accent: .purple))
                     Button { model.haptic(); model.key("rem_dim") } label: { Text("Restore").multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: 60) }.buttonStyle(DeskButtonStyle())
@@ -1482,13 +1519,13 @@ private struct NativeChannelActionsView: View {
                     Button { model.haptic(); model.send(selection.sneak()) } label: { Text("Sneak to cue").frame(maxWidth: .infinity, minHeight: 50) }.buttonStyle(DeskButtonStyle())
                 }.disabled(!model.ready)
                 Button { model.haptic(); details = true } label: { Label("Fixture details", systemImage: "info.circle").frame(maxWidth: .infinity, minHeight: 54) }.buttonStyle(DeskButtonStyle(accent: .blue))
-                HStack {
-                    NavigationLink("Movement") { NativeWheelsView() }
-                    Spacer()
-                    NavigationLink("Color") { NativeColorView() }
-                }.font(.subheadline).padding(.vertical, 8)
+                HStack(spacing:10) {
+                    NavigationLink { NativeWheelsView() } label: { Label("Movement",systemImage:"move.3d").frame(maxWidth:.infinity,minHeight:48) }
+                    NavigationLink { NativeColorView() } label: { Label("Color",systemImage:"paintpalette").frame(maxWidth:.infinity,minHeight:48) }
+                }.buttonStyle(.bordered).simultaneousGesture(TapGesture().onEnded { if model.ready { model.send(selection.select()) } })
+                NavigationLink("Beam & Optics") { NativeWheelsView(beamOnly:true) }.buttonStyle(.bordered).simultaneousGesture(TapGesture().onEnded { if model.ready { model.send(selection.select()) } })
             }.padding()
-        }.navigationTitle("Quick actions")
+        }.navigationTitle("Channel control")
         .sheet(isPresented: $details) {
             NavigationStack {
                 VStack(spacing: 0) {
