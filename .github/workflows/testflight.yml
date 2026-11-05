@@ -5,7 +5,7 @@ on:
       screenshot_scope:
         description: 'Native screenshot coverage'
         type: choice
-        options: [full, console]
+        options: [none, full, console]
         default: full
 permissions:
   contents: read
@@ -43,10 +43,12 @@ jobs:
           swift test --package-path native/OSCWire
           bundle install
       - name: Capture native iPhone and iPad screens
+        if: inputs.screenshot_scope != 'none'
         env:
           SCREENSHOT_SCOPE: ${{ inputs.screenshot_scope }}
         run: python3 scripts/capture-ios-screens.py
       - name: Keep native screenshots
+        if: inputs.screenshot_scope != 'none'
         uses: actions/upload-artifact@v4
         with:
           name: Element-Remote-Screenshots-${{ github.run_number }}

@@ -21,8 +21,8 @@ public enum OSCCodec {
     private static func uint32(_ value: UInt32) -> Data {
         Data([UInt8((value >> 24) & 255), UInt8((value >> 16) & 255), UInt8((value >> 8) & 255), UInt8(value & 255)])
     }
-    public static func encode(_ message: OSCMessage) throws -> Data {
-        guard message.address.hasPrefix("/eos/"), message.address.count <= 256,
+    public static func encode(_ message: OSCMessage, allowExternalAddress: Bool = false) throws -> Data {
+        guard (message.address.hasPrefix("/eos/") || (allowExternalAddress && message.address.hasPrefix("/"))), message.address.count <= 256,
               !message.address.contains(where: { $0.isWhitespace || $0.asciiValue == 0 }), message.parameters.count <= 64 else {
             throw OSCWireError.invalid("Invalid OSC address or argument count")
         }
@@ -72,7 +72,7 @@ public enum OSCCodec {
             return messages
         }
         guard address.hasPrefix("/"), address.utf8.count <= 1024 else { throw OSCWireError.invalid("Invalid OSC address") }
-        let types = try readString(); guard types.first == ",", types.count <= 256 else { throw OSCWireError.invalid("Invalid OSC types") }
+        let types = try readString(); guard types.first == ",", types.count <= 4096 else { throw OSCWireError.invalid("Invalid OSC types") }
         var values: [Any] = []
         for type in types.dropFirst() {
             switch type {
@@ -414,11 +414,46 @@ public struct EosShowData {
               let marker = p.firstIndex(of: "list"), marker + 2 == p.count-1,
               let offset = Int(p[marker+1]), let count = Int(p[marker+2]),
               offset >= 0, count >= 0, offset + count <= 4096, count == message.parameters.count else { return nil }
-        guard ["cue", "cuelist", "fp", "cp", "bp", "sub"].contains(p[3]) else { return nil }
+        guard ["cue", "cuelist", "fp", "cp", "bp", "sub", "snap"].contains(p[3]) else { return nil }
         let key = p[3..<marker].joined(separator: "/")
         var fields = records[key] ?? [:]
         for (index, value) in message.parameters.enumerated() { fields[offset+index] = value }
         records[key] = fields
         return key
+    }
+}
+
+public struct EosRehearsalEvent: Codable, Identifiable {
+    public let id: UUID
+    public let date: Date
+    public let show: String
+    public let detail: String
+    public init(date: Date = Date(), show: String, detail: String) { self.id = UUID(); self.date = date; self.show = show; self.detail = detail }
+    public static func detail(address: String, values: [Any]) -> String? {
+        let p = address.split(separator: "/").map(String.init)
+        if p.count == 7, Array(p.prefix(4)) == ["eos", "out", "event", "cue"], ["fire", "stop", "resume"].contains(p[6]) { return "Cue \(p[4])/\(p[5]) · \(p[6]) · \(values.first as? String ?? "")" }
+        if p.count == 5, Array(p.prefix(4)) == ["eos", "out", "event", "show"], ["saved", "loaded", "cleared"].contains(p[4]) { return "Show \(p[4])" }
+        return nil
+    }
+}
+
+public enum EosCreativeCommands {
+    public static func channel(fromQR text: String) -> Int? {
+        if let number = Int(text), (1...999999).contains(number) { return number }
+        guard let url = URL(string: text), url.scheme == "elementremote", url.host == "channel",
+              let number = Int(url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))), (1...999999).contains(number), url.query == nil else { return nil }
+        return number
+    }
+    public static func fan(channels: [Int], parameter: String, start: Double, end: Double) throws -> [OSCMessage] {
+        let channels = Array(Set(channels)).sorted()
+        guard !channels.isEmpty, channels.count <= 64, channels.allSatisfy({ (1...999999).contains($0) }), ["pan", "tilt", "intens"].contains(parameter), start.isFinite, end.isFinite, abs(start) <= 10000, abs(end) <= 10000 else { throw OSCWireError.invalid("Select up to 64 channels and valid parameter values") }
+        return channels.enumerated().map { index, channel in
+            let value = start + (end-start) * (channels.count > 1 ? Double(index)/Double(channels.count-1) : 0)
+            return OSCMessage(address: "/eos/chan/\(channel)/param/\(parameter)", parameters: [value])
+        }
+    }
+    public static func xyz(x: Double, y: Double, z: Double) throws -> OSCMessage {
+        guard [x,y,z].allSatisfy({ $0.isFinite && abs($0) <= 1000 }) else { throw OSCWireError.invalid("Enter coordinates in meters within ±1000") }
+        return OSCMessage(address: "/eos/xyz", parameters: [x,y,z])
     }
 }

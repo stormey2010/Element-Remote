@@ -2,6 +2,8 @@ import Foundation
 import Network
 import Darwin
 import UIKit
+import AVFoundation
+import CoreImage.CIFilterBuiltins
 
 struct ConsoleProfile: Identifiable, Codable, Equatable {
     var id: UUID
@@ -512,6 +514,9 @@ struct CueHistoryItem: Identifiable, Equatable {
 }
 
 @MainActor final class NativeRemoteModel: ObservableObject {
+    @Published var rehearsalEvents: [EosRehearsalEvent] = []
+    @Published var recordRehearsal = UserDefaults.standard.bool(forKey: "element.recordRehearsal")
+    private var rehearsalSave: DispatchWorkItem?
     @Published var online = false
     @Published var ready = false
     @Published var commandLine = "Connect to Element to begin"
@@ -570,6 +575,7 @@ struct CueHistoryItem: Identifiable, Equatable {
     ]
 
     init() {
+        if let data = UserDefaults.standard.data(forKey: "element.rehearsalEvents"), let events = try? JSONDecoder().decode([EosRehearsalEvent].self, from: data) { rehearsalEvents = Array(events.prefix(1000)) }
         connection.onMessage = { [weak self] message in
             guard let self else { return }
             switch message["type"] as? String {
@@ -714,6 +720,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             if self.fixtures.count >= 512, self.fixtures[fixture.id] == nil, let first = self.fixtures.keys.first { self.fixtures.removeValue(forKey: first) }
             self.fixtures[fixture.id] = fixture
         }
+        if recordRehearsal, let detail = EosRehearsalEvent.detail(address: address, values: values) { logRehearsal(detail) }
         receiveShowData(address, values)
         if address == "/eos/out/cmd" || (address.hasPrefix("/eos/out/user/") && address.hasSuffix("/cmd")) {
             self.commandLine = values.first as? String ?? ""
@@ -769,6 +776,16 @@ struct CueHistoryItem: Identifiable, Equatable {
 
     func send(_ address: String, _ values: [Any] = []) {
         if demoMode {
+            let path = address.split(separator: "/").map(String.init)
+            if path.count == 5, path[1] == "chan", let channel = Int(path[2]), path[3] == "param", let value = values.first as? NSNumber {
+                practiceDesk.setChannelParameter(channel, name:path[4], value:value.doubleValue); syncPracticeDesk(); return
+            }
+            if address == "/eos/xyz" { feedback["/eos/out/xyz"] = values; return }
+            if address.hasPrefix("/eos/snap/") { commandLine = "Practice workspace recalled"; return }
+            if address == "/eos/key/stop_effect_button" { practiceDesk.completeExternalCommand("Stop Effect"); syncPracticeDesk(); return }
+            if address.hasPrefix("/eos/fader/1/"), address.hasSuffix("/home"), path.count == 5 {
+                feedback["/eos/out/fader/1/" + path[3]] = [0.5]; return
+            }
             if address.hasPrefix("/eos/key/"), let key = address.split(separator: "/").last.map(String.init) {
                 if values.isEmpty || (values.first as? NSNumber)?.doubleValue != 0 { simulateDemoKey(key) }
             } else if address == "/eos/newcmd" || address == "/eos/cmd", let text = values.first as? String {
@@ -790,6 +807,7 @@ struct CueHistoryItem: Identifiable, Equatable {
                     if text.hasPrefix("Beam") { practiceDesk.setParameter("zoom", value: Double(palette * 8)) }
                     practiceDesk.completeExternalCommand(text); syncPracticeDesk(); return
                 }
+                if text.hasPrefix("Effect ") { practiceDesk.completeExternalCommand(text); syncPracticeDesk(); return }
                 do { try practiceDesk.execute(text); syncPracticeDesk() }
                 catch { self.error = error.localizedDescription }
             } else if address.hasPrefix("/eos/fader/1/"), address.hasSuffix("/fire"), let n = Int(address.split(separator: "/").dropLast().last ?? "") {
@@ -821,7 +839,7 @@ struct CueHistoryItem: Identifiable, Equatable {
             return
         }
         guard ready else { error = "Connect to the console first."; return }
-        connection.sendBatch(messages)
+        for offset in stride(from: 0, to: messages.count, by: 64) { connection.sendBatch(Array(messages.dropFirst(offset).prefix(64))) }
     }
 
     func tap(_ address: String) {
@@ -973,6 +991,28 @@ struct CueHistoryItem: Identifiable, Equatable {
         for channel in selected.sorted() { send("/eos/get/patch/\(channel)") }
     }
 
+    func logRehearsal(_ detail: String) {
+        rehearsalEvents.insert(EosRehearsalEvent(show: text("/eos/out/show/name"), detail: detail), at: 0)
+        rehearsalEvents = Array(rehearsalEvents.prefix(1000))
+        saveRehearsal()
+    }
+    func saveRehearsal() {
+        rehearsalSave?.cancel()
+        // Persist after each event so background suspension does not lose the log.
+        if let data = try? JSONEncoder().encode(rehearsalEvents) { UserDefaults.standard.set(data, forKey: "element.rehearsalEvents") }
+    }
+    func patchNote(channel: Int, part: Int, label: String, note: String) {
+        guard ready else { return }
+        if demoMode {
+            let id = "\(channel)/\(part)"
+            if let old = fixtures[id] { fixtures[id] = EosFixtureRecord(channel: channel, part: part, label: label, manufacturer: old.manufacturer, model: old.model, address: old.address, intensityAddress: old.intensityAddress, level: old.level, gel: old.gel, notes: note, endingAddress: old.endingAddress, textFields: old.textFields, partCount: old.partCount) }
+            return
+        }
+        send("/eos/set/patch/\(channel)/\(part)/label", [label])
+        send("/eos/set/patch/\(channel)/\(part)/notes", [note])
+        send("/eos/get/patch/\(channel)/\(part)")
+    }
+
     private func clearShowSession() {
         queryGeneration = UUID(); familyGenerations = [:]
         refreshWork.values.forEach { $0.cancel() }; refreshWork = [:]
@@ -993,7 +1033,7 @@ struct CueHistoryItem: Identifiable, Equatable {
     }
 
     func requestShow(_ family: String, reset: Bool = true) {
-        guard ["cuelist", "fp", "cp", "bp", "sub"].contains(family) || family.range(of: #"^cue/[0-9]+$"#, options: .regularExpression) != nil else { return }
+        guard ["cuelist", "fp", "cp", "bp", "sub", "snap"].contains(family) || family.range(of: #"^cue/[0-9]+$"#, options: .regularExpression) != nil else { return }
         requestedFamilies.insert(family)
         if reset { showData.clear(family); showCounts[family] = nil }
         if demoMode {
@@ -1455,6 +1495,7 @@ private struct NativeFixtureDetailsView: View {
                                     if !text.isEmpty { field("Text \(index + 1)", text) }
                                 }
                                 if !fixture.notes.isEmpty { Text(fixture.notes).font(.subheadline).foregroundStyle(.secondary) }
+                                NavigationLink("Edit label & notes") { NativePatchNotesView(fixture: fixture) }
                             }.deskCard()
                         }
                     }
@@ -1830,8 +1871,24 @@ private struct NativeMoreView: View {
                     rule
                     row("Beam & Optics", "Zoom, edge, iris & fixture optics", "light.beacon.max") { toolPage { NativeWheelsView(beamOnly: true) } }
                 }
+                section("Creative tools") {
+                    row("Fan & Effects", "Spread fixtures and control mapped effects", "waveform.path") { NativeCreativeView() }
+                    rule
+                    row("Stage Focus", "Calibrated XYZ position control", "scope") { NativeStageFocusView() }
+                    rule
+                    row("Show Control", "Lighting with QLab sound and video", "play.rectangle") { NativeShowControlView() }
+                }
+                section("Show tools") {
+                    row("Cue Monitor", "Large, read-only current and next cues", "eye") { NativeCueMonitorView() }
+                    rule
+                    row("Rehearsal Timeline", "Cue events and your notes", "clock.arrow.circlepath") { NativeRehearsalView() }
+                    rule
+                    row("Console Workspaces", "Recall console display snapshots", "rectangle.3.group") { NativeShowBrowser(family: "snap", title: "Console snapshots") }
+                }
                 section("Utilities") {
                     row("Patch", "Fixture information", "point.3.connected.trianglepath.dotted") { NativePatchView() }
+                    rule
+                    row("Fixture QR", "Scan or share a channel label", "qrcode.viewfinder") { NativeFixtureQRView() }
 
                 }
             }.padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 20)
@@ -2496,6 +2553,9 @@ private struct NativeShowItemDetails: View {
                         let parts = key.split(separator: "/")
                         if parts.count == 4 { model.goToCue(String(parts[2]), list: Int(parts[1])) }
                     }.buttonStyle(.bordered).disabled(!model.ready)
+                } else if family == "snap" {
+                    Text("Restores the console’s display layout. This does not restore a lighting look.").font(.subheadline).foregroundStyle(.secondary)
+                    Button("Recall console workspace") { model.send("/eos/snap/\(number)/fire") }.buttonStyle(.borderedProminent).disabled(!model.ready)
                 } else if family == "sub" {
                     VStack(spacing: 12) {
                         detail("Mode", value(3)); detail("Fader mode", value(4)); detail("HTP", boolean(5))
@@ -2524,5 +2584,295 @@ private struct NativeShowItemDetails: View {
     private func milliseconds(_ index: Int) -> String { (fields[index] as? NSNumber).map { String(format: "%.1fs", $0.doubleValue / 1000) } ?? "Not reported" }
     private func detail(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(); Text(value.isEmpty ? "—" : value).multilineTextAlignment(.trailing) }.font(.subheadline)
+    }
+}
+
+private struct NativeCreativeView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var parameter = "pan"
+    @State private var start = -30.0
+    @State private var end = 30.0
+    @State private var effect = "901"
+    @State private var rateFader = 1
+    @State private var sizeFader = 2
+    @State private var rate = 0.5
+    @State private var size = 0.5
+    private var channels: [Int] { model.selectedChannels.sorted() }
+    var body: some View {
+        Form {
+            Section("Spread selected fixtures") {
+                Text(channels.isEmpty ? "Select channels on the console first." : "Channels " + channels.map(String.init).joined(separator: ", ")).font(.subheadline).foregroundStyle(.secondary)
+                Picker("Parameter", selection: $parameter) { Text("Pan").tag("pan"); Text("Tilt").tag("tilt"); Text("Intensity").tag("intens") }
+                numeric("First channel", value: $start)
+                numeric("Last channel", value: $end)
+                Text("Applies a linear spread to up to 64 channels in ascending channel order. Values are degrees for pan/tilt and percent for intensity.").font(.caption).foregroundStyle(.secondary)
+                Button("Apply spread") {
+                    do { model.sendBatch(try EosCreativeCommands.fan(channels: channels, parameter: parameter, start: start, end: end)) }
+                    catch { model.error = error.localizedDescription }
+                }.disabled(!model.ready || channels.isEmpty || (parameter == "intens" && (![start,end].allSatisfy { (0...100).contains($0) })))
+            }
+            Section("Stored effects") {
+                TextField("Effect number", text: $effect).keyboardType(.numberPad)
+                Button("Apply effect to selection") { model.send("/eos/newcmd", ["Effect \(effect) Enter"]) }
+                    .disabled(!model.ready || channels.isEmpty || (Int(effect).map { !(1...999999).contains($0) } ?? true))
+                Button("Stop effects on selection") { model.sendBatch([OSCMessage(address: "/eos/key/stop_effect_button", parameters: [1.0]), OSCMessage(address: "/eos/key/stop_effect_button", parameters: [0.0]), OSCMessage(address: "/eos/key/enter", parameters: [1.0]), OSCMessage(address: "/eos/key/enter", parameters: [0.0])]) }.disabled(!model.ready || channels.isEmpty)
+            }
+            Section("Mapped effect controls") {
+                Text("In console Fader Config, assign Effect Rate and Effect Size to the faders below. These sliders drive those mapped faders; they do not edit the base effect.").font(.caption).foregroundStyle(.secondary)
+                Stepper("Rate · fader \(rateFader)", value: $rateFader, in: 1...40)
+                Slider(value: $rate, in: 0...1, onEditingChanged: { editing in if !editing { model.send("/eos/fader/1/\(rateFader)", [rate]) } }).accessibilityLabel("Mapped effect rate")
+                Button("Home rate fader") { model.send("/eos/fader/1/\(rateFader)/home") }
+                Stepper("Size · fader \(sizeFader)", value: $sizeFader, in: 1...40)
+                Slider(value: $size, in: 0...1, onEditingChanged: { editing in if !editing { model.send("/eos/fader/1/\(sizeFader)", [size]) } }).accessibilityLabel("Mapped effect size")
+                Button("Home size fader") { model.send("/eos/fader/1/\(sizeFader)/home") }
+            }.disabled(!model.ready)
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Fan & Effects")
+        .onAppear { if model.ready { model.send("/eos/fader/1/config/1/40") } }
+    }
+    private func numeric(_ title: String, value: Binding<Double>) -> some View { HStack { Text(title); Spacer(); TextField(title, value: value, format: .number).multilineTextAlignment(.trailing).keyboardType(.numbersAndPunctuation).frame(width: 100) } }
+}
+
+private struct NativeStageFocusView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var calibrated = false
+    @State private var width = 12.0
+    @State private var depth = 8.0
+    @State private var x = 0.0
+    @State private var y = 0.0
+    @State private var z = 0.0
+    @State private var follow = false
+    @State private var lastSent = -Double.infinity
+    @State private var dragSession: UUID?
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Stage coordinates").font(.headline)
+                    Text("Requires calibrated fixture positions in Augment3d. Coordinates are meters, with the same origin and axes as your console model.").font(.subheadline).foregroundStyle(.secondary)
+                    Toggle("My fixtures are calibrated", isOn: $calibrated)
+                    HStack { dimension("Map width", value: $width); dimension("Map depth", value: $depth) }
+                    HStack { dimension("X", value: $x); dimension("Y", value: $y); dimension("Z", value: $z) }
+                    Toggle("Follow finger while dragging", isOn: $follow)
+                }.deskCard()
+                GeometryReader { geometry in
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 18).fill(DeskPalette.field)
+                        Path { path in
+                            path.move(to: CGPoint(x: geometry.size.width/2,y:0)); path.addLine(to: CGPoint(x:geometry.size.width/2,y:geometry.size.height))
+                            path.move(to: CGPoint(x:0,y:geometry.size.height/2)); path.addLine(to: CGPoint(x:geometry.size.width,y:geometry.size.height/2))
+                        }.stroke(DeskPalette.rule)
+                        Image(systemName: "scope").font(.system(size: 34)).foregroundStyle(DeskPalette.accent)
+                            .position(x: (x/max(width,1)+0.5)*geometry.size.width, y:(0.5-y/max(depth,1))*geometry.size.height)
+                        VStack { Text("+Y"); Spacer(); Text("−Y") }.font(.caption2).foregroundStyle(.secondary).padding(8)
+                    }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        if dragSession == nil { dragSession = model.session }
+                        guard dragSession == model.session else { return }
+                        x = (min(max(value.location.x/geometry.size.width,0),1)-0.5)*max(width,1)
+                        y = (0.5-min(max(value.location.y/geometry.size.height,0),1))*max(depth,1)
+                        if follow { apply() }
+                    }.onEnded { _ in if follow, dragSession == model.session { apply(force:true) }; dragSession = nil })
+                }.frame(height: 260).disabled(!calibrated || !model.ready || model.selectedChannels.isEmpty)
+                Button("Focus selection here") { apply(force:true) }.buttonStyle(.borderedProminent).disabled(!calibrated || !model.ready || model.selectedChannels.isEmpty)
+                Text("Manual position control; it does not track actors. The console computes fixture movement.").font(.caption).foregroundStyle(.secondary)
+            }.padding()
+        }.navigationTitle("Stage Focus")
+    }
+    private func dimension(_ title: String, value: Binding<Double>) -> some View { VStack(alignment:.leading) { Text(title).font(.caption).foregroundStyle(.secondary); TextField(title,value:value,format:.number).keyboardType(.numbersAndPunctuation).textFieldStyle(.roundedBorder) } }
+    private func apply(force: Bool = false) {
+        guard calibrated, model.ready, !model.selectedChannels.isEmpty else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now-lastSent >= 0.1 else { return }; lastSent = now
+        do { model.send(try EosCreativeCommands.xyz(x:x,y:y,z:z)) } catch { model.error = error.localizedDescription }
+    }
+}
+
+private struct NativeRehearsalView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var note = ""
+    @State private var confirmClear = false
+    var body: some View {
+        List {
+            Section {
+                Toggle("Record console events", isOn: $model.recordRehearsal).onChange(of:model.recordRehearsal) { UserDefaults.standard.set($0, forKey:"element.recordRehearsal") }
+                Text("Records received cue and show-file events while connected in the foreground. Stores up to 1,000 entries on this device.").font(.caption).foregroundStyle(.secondary)
+                HStack { TextField("Rehearsal note",text:$note); Button("Add") { model.logRehearsal(note); note = "" }.disabled(note.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty) }
+                ShareLink(item:model.rehearsalEvents.reversed().map { "\($0.date.formatted()) | \($0.show) | \($0.detail)" }.joined(separator:"\n")) { Label("Share timeline",systemImage:"square.and.arrow.up") }.disabled(model.rehearsalEvents.isEmpty)
+            }
+            Section("Timeline") {
+                if model.rehearsalEvents.isEmpty { Text("No events recorded yet.").foregroundStyle(.secondary) }
+                ForEach(model.rehearsalEvents) { event in VStack(alignment:.leading,spacing:5) { Text(event.detail); Text(event.date,style:.time).font(.caption).foregroundStyle(.secondary); if !event.show.isEmpty { Text(event.show).font(.caption2).foregroundStyle(.secondary) } } }
+            }
+            Section { Button("Clear timeline",role:.destructive) { confirmClear = true } }
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Rehearsal")
+        .confirmationDialog("Clear recorded events?",isPresented:$confirmClear,titleVisibility:.visible) { Button("Clear",role:.destructive) { model.rehearsalEvents = []; model.saveRehearsal() } }
+    }
+}
+
+private struct NativeCueMonitorView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:28) {
+                Label(model.online ? "Live console feedback" : "Disconnected · values may be stale",systemImage:model.online ? "dot.radiowaves.left.and.right" : "wifi.slash").font(.caption).foregroundStyle(.secondary)
+                VStack(alignment:.leading,spacing:18) { Text("NOW").font(.caption.weight(.semibold)).foregroundStyle(DeskPalette.accent); Text(model.activeCueText).font(.system(size:42,weight:.semibold)); ProgressView(value:model.activeCuePercent).tint(DeskPalette.accent) }.deskCard()
+                VStack(alignment:.leading,spacing:18) { Text("NEXT").font(.caption.weight(.semibold)).foregroundStyle(DeskPalette.accent); Text(model.pendingCueText).font(.system(size:32,weight:.medium)) }.deskCard()
+                Text("Read-only display · no playback buttons").font(.caption).foregroundStyle(.secondary)
+            }.padding()
+        }.navigationTitle("Cue Monitor")
+    }
+}
+
+private struct NativePatchNotesView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let fixture: EosFixtureRecord
+    @State private var label = ""
+    @State private var note = ""
+    @State private var sent = false
+    var body: some View {
+        Form {
+            Section("Channel \(fixture.channel) · Part \(fixture.part)") {
+                TextField("Fixture label",text:$label)
+                TextEditor(text:$note).frame(minHeight:180).accessibilityLabel("Fixture notes")
+                Button("Send label & notes to console") { model.patchNote(channel:fixture.channel,part:fixture.part,label:label,note:note); sent = true }.disabled(!model.ready || label.utf8.count > 512 || note.utf8.count > 4096)
+                if sent { Text(model.demoMode ? "Updated practice fixture." : "Sent. Reported console values appear below; OSC does not provide a save acknowledgement.").font(.caption).foregroundStyle(.secondary) }
+            }
+            if let reported = model.fixtures[fixture.id] { Section("Reported by console") { LabeledContent("Label",value:reported.label); Text(reported.notes.isEmpty ? "No notes reported" : reported.notes) } }
+            Text("Changes edit show data on the console. Save the show on Element to keep them in its show file.").font(.caption).foregroundStyle(.secondary)
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Fixture notes")
+        .onAppear { label = fixture.label; note = fixture.notes }
+    }
+}
+
+private struct NativeFixtureQRView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var channel = "1"
+    @State private var scanning = false
+    @State private var inspected: EosChannelSelection?
+    @State private var pendingScan: String?
+    @State private var validation = ""
+    private var number: Int? { Int(channel).flatMap { (1...999999).contains($0) ? $0 : nil } }
+    private var qr: UIImage? {
+        guard let number else { return nil }
+        let filter = CIFilter.qrCodeGenerator(); filter.message = Data("elementremote://channel/\(number)".utf8)
+        guard let output = filter.outputImage?.transformed(by:CGAffineTransform(scaleX:10,y:10)), let image = CIContext().createCGImage(output,from:output.extent) else { return nil }
+        return UIImage(cgImage:image)
+    }
+    var body: some View {
+        ScrollView {
+            VStack(spacing:18) {
+                Button { scanning = true } label: { Label("Scan fixture label",systemImage:"qrcode.viewfinder").frame(maxWidth:.infinity,minHeight:52) }.buttonStyle(.borderedProminent)
+                VStack(alignment:.leading,spacing:12) {
+                    Text("Create a channel label").font(.headline)
+                    TextField("Channel",text:$channel).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                    if let qr, let number {
+                        Image(uiImage:qr).interpolation(.none).resizable().scaledToFit().padding(20).background(.white,in:RoundedRectangle(cornerRadius:16)).frame(maxWidth:260).frame(maxWidth:.infinity)
+                        Text("Channel \(number)").font(.title2.weight(.semibold)).frame(maxWidth:.infinity)
+                        ShareLink(item:Image(uiImage:qr),preview:SharePreview("Channel \(number)",image:Image(uiImage:qr))) { Label("Share QR label",systemImage:"square.and.arrow.up") }
+                        Button("Inspect channel") { open(String(number)) }
+                    }
+                    Text("Scan with Element Remote. Labels identify channel numbers; replace them if the show’s channel assignments change.").font(.caption).foregroundStyle(.secondary)
+                    if !validation.isEmpty { Text(validation).foregroundStyle(.orange) }
+                }.deskCard()
+            }.padding()
+        }.navigationTitle("Fixture QR")
+        .sheet(isPresented:$scanning,onDismiss: { if let result = pendingScan { pendingScan = nil; open(result) } }) { NativeQRScanner { result in pendingScan = result; scanning = false } }
+        .sheet(isPresented:Binding(get:{ inspected != nil },set:{ if !$0 { inspected = nil } })) { if let selection = inspected { NavigationStack { NativeFixtureDetailsView(selection:selection) }.environmentObject(model) } }
+    }
+    private func open(_ text: String) {
+        guard let number = EosCreativeCommands.channel(fromQR:text) else { validation = "This is not an Element Remote channel label."; return }
+        channel = String(number); validation = ""; inspected = try? EosChannelSelection(String(number))
+    }
+}
+
+private struct NativeQRScanner: UIViewControllerRepresentable {
+    let found: (String)->Void
+    func makeUIViewController(context:Context)->QRScanController { let controller = QRScanController(); controller.found = found; return controller }
+    func updateUIViewController(_ controller:QRScanController,context:Context) {}
+    static func dismantleUIViewController(_ controller:QRScanController,coordinator:()) { controller.stop() }
+}
+private final class QRScanController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    var found: ((String)->Void)?
+    private let capture = AVCaptureSession()
+    private let cameraQueue = DispatchQueue(label:"element.qr.camera")
+    private var preview: AVCaptureVideoPreviewLayer?
+    private var completed = false
+    private var active = true
+    override func viewDidLoad() {
+        super.viewDidLoad(); view.backgroundColor = .black
+        AVCaptureDevice.requestAccess(for:.video) { [weak self] granted in DispatchQueue.main.async { if granted { self?.setup() } else { self?.message("Camera access is off. Enable it in iOS Settings to scan labels.") } } }
+    }
+    private func setup() {
+        guard active else { return }
+        guard let camera = AVCaptureDevice.default(for:.video), let input = try? AVCaptureDeviceInput(device:camera), capture.canAddInput(input) else { message("No camera available. You can enter a channel manually."); return }
+        capture.addInput(input)
+        let output = AVCaptureMetadataOutput()
+        guard capture.canAddOutput(output) else { message("QR scanning is unavailable."); return }
+        capture.addOutput(output); output.setMetadataObjectsDelegate(self,queue:.main); output.metadataObjectTypes = [.qr]
+        let layer = AVCaptureVideoPreviewLayer(session:capture); layer.videoGravity = .resizeAspectFill; view.layer.addSublayer(layer); preview = layer; layer.frame = view.bounds
+        let session = capture; cameraQueue.async { session.startRunning() }
+    }
+    override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); preview?.frame = view.bounds }
+    func stop() { active = false; let session = capture; cameraQueue.async { session.stopRunning() } }
+    func metadataOutput(_ output:AVCaptureMetadataOutput,didOutput objects:[AVMetadataObject],from connection:AVCaptureConnection) {
+        guard !completed, let value = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue else { return }; completed = true; stop(); found?(value)
+    }
+    private func message(_ text:String) { let label = UILabel(); label.text = text; label.textColor = .white; label.numberOfLines = 0; label.textAlignment = .center; label.frame = view.bounds.insetBy(dx:24,dy:60); label.autoresizingMask = [.flexibleWidth,.flexibleHeight]; view.addSubview(label) }
+}
+
+private struct NativeShowControlView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @AppStorage("element.qlab.host") private var host = ""
+    @AppStorage("element.qlab.port") private var port = "53000"
+    @State private var soundCue = "1"
+    @State private var lightingCue = "1"
+    @State private var status = ""
+    @State private var link: NWConnection?
+    @State private var sending = false
+    private var valid: Bool { IPv4Address(host) != nil && UInt16(port).map { $0 > 0 } == true && soundCue.range(of:#"^[A-Za-z0-9_.-]{1,64}$"#,options:.regularExpression) != nil }
+    var body: some View {
+        Form {
+            Section("QLab Mac") {
+                TextField("Mac IPv4 address",text:$host).keyboardType(.decimalPad)
+                TextField("OSC port",text:$port).keyboardType(.numberPad)
+                TextField("QLab cue number",text:$soundCue).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Text("Enable OSC Control without a passcode for this connection in QLab, on a trusted local network. QLab must be running on its Mac.").font(.caption).foregroundStyle(.secondary)
+                Button("Start QLab cue") { start(linked:false) }.disabled(!valid || sending)
+            }
+            Section("Linked lighting & sound") {
+                TextField("Element cue",text:$lightingCue).keyboardType(.decimalPad)
+                Button("Run linked cues") { start(linked:true) }.disabled(!valid || sending || !model.ready || (try? EosCommands.goToCue(lightingCue)) == nil)
+                Text("Sends separate lighting and sound commands. This is not frame-synchronized playback. Rehearse the timing before using it in a show.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !status.isEmpty { Section("Status") { Text(status) } }
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Show Control")
+        .onDisappear { link?.cancel(); link = nil; sending = false }
+    }
+    private func start(linked:Bool) {
+        guard valid else { return }
+        if model.demoMode { status = "Practice: QLab cue \(soundCue)"; if linked { model.goToCue(lightingCue) }; return }
+        guard let endpoint = NWEndpoint.Port(port), let bytes = try? OSCCodec.encode(OSCMessage(address:"/cue/\(soundCue)/start",parameters:[]), allowExternalAddress:true) else { return }
+        link?.cancel(); sending = true; status = "Sending…"
+        let targetCue = lightingCue
+        let connection = NWConnection(host:NWEndpoint.Host(host),port:endpoint,using:.udp); link = connection
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.stateUpdateHandler = nil
+                connection.send(content:bytes,completion:.contentProcessed { error in DispatchQueue.main.async {
+                    sending = false; status = error.map { $0.localizedDescription } ?? "QLab command sent; delivery is not acknowledged."
+                    if error == nil && linked { model.goToCue(targetCue) }
+                    connection.cancel()
+                } })
+            case .failed(let error), .waiting(let error):
+                connection.stateUpdateHandler = nil
+                DispatchQueue.main.async { sending = false; status = error.localizedDescription; connection.cancel() }
+            default: break
+            }
+        }
+        connection.start(queue:.global(qos:.userInitiated))
+        DispatchQueue.main.asyncAfter(deadline:.now()+5) {
+            guard link === connection, sending else { return }
+            connection.stateUpdateHandler = nil; connection.cancel(); sending = false; status = "QLab connection timed out. No linked lighting cue was sent."
+        }
     }
 }

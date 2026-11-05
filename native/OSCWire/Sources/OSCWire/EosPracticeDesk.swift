@@ -115,6 +115,10 @@ public struct EosPracticeDesk {
     public mutating func completeExternalCommand(_ command: String) {
         entry = ""; commandLine = command
     }
+    public mutating func setChannelParameter(_ channel: Int, name: String, value: Double) {
+        guard (1...999999).contains(channel), value.isFinite else { return }
+        parameters[channel, default: [:]][name] = value
+    }
     public mutating func setParameter(_ name: String, value: Double) {
         guard value.isFinite else { return }
         for channel in selection?.channels ?? [] { parameters[channel, default: [:]][name] = value }
