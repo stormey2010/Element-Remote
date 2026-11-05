@@ -1427,7 +1427,7 @@ private struct NativeQuickControlView: View {
                     Text("CHANNELS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(entry.isEmpty ? "Enter channel numbers" : entry).font(.system(size: 28, weight: .medium, design: .monospaced)).foregroundStyle(entry.isEmpty ? Color.secondary : Color.primary).frame(maxWidth: .infinity, minHeight: 60, alignment: .leading).accessibilityLabel("Channel selection: " + (entry.isEmpty ? "empty" : entry))
                     if let parsed { Label("\(parsed.channels.count) channel\(parsed.channels.count == 1 ? "" : "s")",systemImage:"checkmark.circle").font(.caption).foregroundStyle(DeskPalette.accent) }
-                    else { Text("Single channels, ranges, + and −").font(.caption).foregroundStyle(.secondary) }
+                    else { Text(entry.isEmpty ? "Try 42 or 1 Thru 5 + 12" : "Finish the channel list to continue").font(.caption).foregroundStyle(.secondary) }
                     if !model.selectedChannels.isEmpty {
                         Button("Use console selection") { entry = model.selectedChannels.map(String.init).joined(separator:" + "); validation = "" }.font(.subheadline)
                     }
@@ -1497,7 +1497,7 @@ private struct NativeChannelActionsView: View {
                             Button(value == 0 ? "Out" : value == 100 ? "Full" : "\(value)%") { brightness = Double(value); applyLevel(force: true); model.haptic() }.frame(maxWidth: .infinity)
                         }
                     }.buttonStyle(.bordered)
-                    Text("Applies to all selected channels.").font(.caption).foregroundStyle(.secondary)
+                    Text("Sets intensity for the channel list shown above.").font(.caption).foregroundStyle(.secondary)
                 }.deskCard().disabled(!model.ready)
                 VStack(alignment:.leading,spacing:12) {
                     Text("Park").font(.headline)
@@ -1793,6 +1793,10 @@ private struct NativePlaybackView: View {
                     }
                     Button("Go to cue 0 · Out") { model.goToCue("0") }.font(.subheadline).disabled(!model.ready)
                 }.deskCard()
+                HStack(spacing:12) {
+                    NavigationLink { NativeCueMonitorView() } label: { Label("Cue Monitor",systemImage:"eye").frame(maxWidth:.infinity,minHeight:48) }
+                    NavigationLink { NativeRehearsalView() } label: { Label("Rehearsal",systemImage:"clock.arrow.circlepath").frame(maxWidth:.infinity,minHeight:48) }
+                }.buttonStyle(.bordered)
                 if !model.cueHistory.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         DisclosureGroup("Recent cues") {
@@ -1859,7 +1863,7 @@ private struct NativeConnectionView: View {
                 }.disabled(model.demoMode)
             } header: { Text("Nearby consoles") } footer: { Text("Checks nearby Wi-Fi addresses on TCP 3032 and advertised OSC services. Other subnets or ports may need Add console.") }
             Section {
-                Toggle("Independent app selection", isOn: Binding(get:{ model.independentUser },set:{ model.independentUser = $0; model.applyUserMode() }))
+                Toggle("Separate app user", isOn: Binding(get:{ model.independentUser },set:{ model.independentUser = $0; model.applyUserMode() }))
                 if let user = model.oscUser { LabeledContent("OSC user",value:String(user)) }
                 NavigationLink("Console health & diagnostics") { NativeConsoleHealthView() }
             } header: { Text("Console user") } footer: { Text("Use a separate Eos user so channel selection and command entry stay independent from the board operator. Live output is still shared. Changing this clears the app’s selection.") }
@@ -1952,78 +1956,148 @@ private struct NativeConsoleEditor: View {
     }
 }
 
+private enum AppTool: String, CaseIterable, Identifiable {
+    case quick, movement, color, emitters, beam, spread, effects, stage, presets, monitor, timeline, qlab, workspaces, patch, compare, qr, health
+    var id: String { rawValue }
+    private var info: (String,String,String,String,String) {
+        switch self {
+        case .quick: return ("Fixtures","Quick Control","Levels, park and common channel actions","bolt.fill","intensity brightness unpark")
+        case .movement: return ("Fixtures","Movement","Pan, tilt and fine adjustment","move.3d","position focus wheels")
+        case .color: return ("Fixtures","Color","Color picker and named palettes","paintpalette","hue saturation gel")
+        case .emitters: return ("Fixtures","LED Color Mixing","Individual red, lime, amber and other emitters","slider.horizontal.3","rgb led emitter")
+        case .beam: return ("Fixtures","Beam & Gobos","Zoom, edge, iris and supported optics","light.beacon.max","prism shutter strobe frost optics")
+        case .patch: return ("Fixtures","Patch & Fixture Info","Addresses, fixture types, labels and notes","point.3.connected.trianglepath.dotted","dmx universe edit notes")
+        case .compare: return ("Fixtures","Compare Fixtures","Read-only differences between two channels","rectangle.split.2x1","parameters differences ranges")
+        case .qr: return ("Fixtures","Fixture QR Labels","Scan a label or create one to share","qrcode.viewfinder","camera scan inspect")
+        case .spread: return ("Looks & movement","Spread Fixtures","Fan pan, tilt or intensity across channels","arrow.left.and.right","fan spread")
+        case .effects: return ("Looks & movement","Effects","Browse effects and adjust mapped controls","waveform.path","circle sweep chase rate size")
+        case .stage: return ("Looks & movement","Stage Map Focus","Advanced focus with calibrated Augment3d","scope","xyz position meters followspot")
+        case .presets: return ("Looks & movement","Presets","Browse and apply stored looks","square.stack","look recall preset")
+        case .monitor: return ("Show & playback","Cue Monitor","Large current and next cue display","eye","read only stage manager")
+        case .timeline: return ("Show & playback","Rehearsal Timeline","Record cue events and add your notes","clock.arrow.circlepath","history log export")
+        case .qlab: return ("Show & playback","QLab Sound & Video","Start QLab cues or link lighting and sound","play.rectangle","show control mac audio")
+        case .workspaces: return ("Show & playback","Console Layouts","Recall display snapshots on the board","rectangle.3.group","snapshot workspace screen")
+        case .health: return ("Diagnostics","Console Health","Connection, processor reports and users","heart.text.square","network latency errors diagnostics")
+        }
+    }
+    var group: String { info.0 }
+    var title: String { info.1 }
+    var subtitle: String { info.2 }
+    var symbol: String { info.3 }
+    func matches(_ query:String) -> Bool { query.isEmpty || (title + " " + subtitle + " " + info.4).localizedCaseInsensitiveContains(query) }
+}
+
 private struct NativeMoreView: View {
     @EnvironmentObject var model: NativeRemoteModel
-    @EnvironmentObject var discovery: ConsoleDiscovery
+    @State private var search = ""
+    @AppStorage("element.tools.favorites") private var favorites = "quick,movement,color,patch"
+    @AppStorage("element.tools.recent") private var recent = ""
+    private let groups = ["Fixtures","Looks & movement","Show & playback","Diagnostics"]
+    private var query: String { search.trimmingCharacters(in:.whitespacesAndNewlines) }
+    private var pinned: [AppTool] { favorites.split(separator:",").compactMap { AppTool(rawValue:String($0)) } }
+    private var matching: [AppTool] { AppTool.allCases.filter { $0.matches(query) } }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                section("Control") {
-                    row("Quick Control", "Select channels and adjust levels", "bolt.fill") { NativeQuickControlView().navigationTitle("Quick Control") }
-                    rule
-                    row("Movement", "Wheels, pan & tilt", "move.3d") { toolPage { NativeWheelsView() } }
-                    rule
-                    row("Color", "Picker & palettes", "paintpalette") { toolPage { NativeColorView() } }
-                    rule
-                    row("Beam & Optics", "Zoom, edge, iris & fixture optics", "light.beacon.max") { toolPage { NativeWheelsView(beamOnly: true) } }
+            VStack(alignment:.leading,spacing:22) {
+                HStack(spacing:10) {
+                    Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Find a tool, e.g. park or gobos",text:$search).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("Search tools")
+                    if !search.isEmpty { Button { search = "" } label: { Image(systemName:"xmark.circle.fill").foregroundStyle(.secondary) }.accessibilityLabel("Clear search") }
+                }.padding(13).background(DeskPalette.field,in:RoundedRectangle(cornerRadius:13))
+                if query.isEmpty {
+                    if !model.selectedChannels.isEmpty {
+                        HStack(spacing:12) {
+                            Image(systemName:"lightbulb.fill").foregroundStyle(DeskPalette.accent)
+                            VStack(alignment:.leading,spacing:4) {
+                                Text("\(model.selectedChannels.count) channel\(model.selectedChannels.count == 1 ? "" : "s") selected").font(.subheadline.weight(.semibold))
+                                Text(model.independentUser ? "Your app selection" : "Following the console user").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }.deskCard()
+                    }
+                    if !pinned.isEmpty { toolSection("Favorites",tools:pinned) }
+                    let recentTools = recent.split(separator:",").compactMap { AppTool(rawValue:String($0)) }.filter { !pinned.contains($0) }.prefix(3)
+                    if !recentTools.isEmpty {
+                        VStack(alignment:.leading,spacing:8) {
+                            sectionLabel("Recently used")
+                            ScrollView(.horizontal,showsIndicators:false) {
+                                HStack { ForEach(Array(recentTools)) { tool in NavigationLink { destination(tool) } label: { Label(tool.title,systemImage:tool.symbol).font(.caption).padding(.horizontal,12).padding(.vertical,10).background(DeskPalette.surface,in:Capsule()) }.buttonStyle(.plain).simultaneousGesture(TapGesture().onEnded { remember(tool) }) } }
+                            }
+                        }
+                    }
                 }
-                section("Creative tools") {
-                    row("Fan & Effects", "Spread fixtures and control mapped effects", "waveform.path") { NativeCreativeView() }
-                    rule
-                    row("Stage Focus", "Calibrated XYZ position control", "scope") { NativeStageFocusView() }
-                    rule
-                    row("Show Control", "Lighting with QLab sound and video", "play.rectangle") { NativeShowControlView() }
+                if !query.isEmpty && matching.isEmpty { ContentUnavailableViewCompat(title:"No matching tools",text:"Try a task such as color, notes, effects or network.",symbol:"magnifyingglass") }
+                ForEach(groups,id:\.self) { group in
+                    let tools = matching.filter { $0.group == group && (!query.isEmpty || !pinned.contains($0)) }
+                    if !tools.isEmpty { toolSection(group,tools:tools) }
                 }
-                section("Show tools") {
-                    row("Cue Monitor", "Large, read-only current and next cues", "eye") { NativeCueMonitorView() }
-                    rule
-                    row("Rehearsal Timeline", "Cue events and your notes", "clock.arrow.circlepath") { NativeRehearsalView() }
-                    rule
-                    row("Console Workspaces", "Recall console display snapshots", "rectangle.3.group") { NativeShowBrowser(family: "snap", title: "Console snapshots") }
+                if query.isEmpty { Text("Tap a star to keep a tool in Favorites. Independent app selection is in Settings.").font(.caption).foregroundStyle(.secondary).padding(.horizontal,6) }
+            }.padding(.horizontal,18).padding(.top,6).padding(.bottom,24)
+        }.scrollDismissesKeyboard(.interactively)
+    }
+    private func sectionLabel(_ title:String)->some View { Text(title.uppercased()).font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary).padding(.leading,6) }
+    private func toolSection(_ title:String,tools:[AppTool])->some View {
+        VStack(alignment:.leading,spacing:8) {
+            sectionLabel(title)
+            VStack(spacing:0) {
+                ForEach(tools) { tool in
+                    HStack(spacing:4) {
+                        NavigationLink { destination(tool) } label: {
+                            HStack(spacing:13) {
+                                Image(systemName:tool.symbol).font(.system(size:20)).foregroundStyle(DeskPalette.accent).frame(width:28)
+                                VStack(alignment:.leading,spacing:4) { Text(tool.title).font(.system(size:16,weight:.medium)).foregroundStyle(.primary); Text(tool.subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true) }
+                                Spacer(minLength:4)
+                                Image(systemName:"chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                            }.padding(.vertical,14).contentShape(Rectangle())
+                        }.buttonStyle(.plain).simultaneousGesture(TapGesture().onEnded { remember(tool) })
+                        Button { toggle(tool) } label: { Image(systemName:pinned.contains(tool) ? "star.fill" : "star").font(.system(size:15)).foregroundStyle(pinned.contains(tool) ? DeskPalette.accent : Color.secondary).frame(width:44,height:48) }.buttonStyle(.plain).accessibilityLabel((pinned.contains(tool) ? "Remove " : "Favorite ") + tool.title).accessibilityHint("Changes your Favorites list")
+                    }
+                    if tool != tools.last { Divider().padding(.leading,41) }
                 }
-                section("Utilities") {
-                    row("Compare Fixtures", "Read-only parameter differences", "rectangle.split.2x1") { NativeFixtureCompareView() }
-                    rule
-                    row("Console Health", "Connection, processor status and users", "heart.text.square") { NativeConsoleHealthView() }
-                    rule
-                    row("Patch", "Fixture information", "point.3.connected.trianglepath.dotted") { NativePatchView() }
-                    rule
-                    row("Fixture QR", "Scan or share a channel label", "qrcode.viewfinder") { NativeFixtureQRView() }
+            }.padding(.leading,14).padding(.trailing,4).deskPanel()
+        }
+    }
+    private func remember(_ tool:AppTool) { model.haptic(); recent = ([tool.rawValue] + recent.split(separator:",").map(String.init).filter { $0 != tool.rawValue }).prefix(5).joined(separator:",") }
+    private func toggle(_ tool:AppTool) { model.haptic(); var items = pinned; if items.contains(tool) { items.removeAll { $0 == tool } } else { items.append(tool) }; favorites = items.map(\.rawValue).joined(separator:",") }
+    @ViewBuilder private func destination(_ tool:AppTool)->some View {
+        switch tool {
+        case .quick: NativeQuickControlView().navigationTitle("Quick Control")
+        case .movement: NativeCommandTool { NativeWheelsView() }
+        case .color: NativeCommandTool { NativeColorView() }
+        case .emitters: NativeEmitterView()
+        case .beam: NativeCommandTool { NativeWheelsView(beamOnly:true) }
+        case .spread: NativeCreativeView(initialTab:0)
+        case .effects: NativeCreativeView(initialTab:1)
+        case .stage: NativeStageFocusView()
+        case .presets: NativeShowBrowser(family:"preset",title:"Presets")
+        case .monitor: NativeCueMonitorView()
+        case .timeline: NativeRehearsalView()
+        case .qlab: NativeShowControlView()
+        case .workspaces: NativeShowBrowser(family:"snap",title:"Console layouts")
+        case .patch: NativePatchView()
+        case .compare: NativeFixtureCompareView()
+        case .qr: NativeFixtureQRView()
+        case .health: NativeConsoleHealthView()
+        }
+    }
+}
 
+private struct NativeCommandTool<Content:View>: View {
+    @EnvironmentObject var model:NativeRemoteModel
+    private let content:Content
+    init(@ViewBuilder content:()->Content) { self.content = content() }
+    var body: some View {
+        VStack(spacing:0) {
+            VStack(alignment:.leading,spacing:8) {
+                HStack {
+                    Text(model.selectedChannels.isEmpty ? "Choose channels to begin" : "\(model.selectedChannels.count) selected · " + (model.independentUser ? "app user" : "console user")).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    NavigationLink(model.selectedChannels.isEmpty ? "Select" : "Change") { NativeQuickControlView().navigationTitle("Quick Control") }.font(.caption.weight(.semibold)).accessibilityLabel("Change controlled channels")
                 }
-            }.padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 20)
+                NativeCommandReadout()
+            }.padding(12).background(DeskPalette.surface,in:RoundedRectangle(cornerRadius:14)).overlay { RoundedRectangle(cornerRadius:14).strokeBorder(model.demoMode ? DeskPalette.accent : DeskPalette.rule) }.padding(.horizontal,16).padding(.bottom,6)
+            content
         }
-    }
-    private var rule: some View { Divider().padding(.leading, 44) }
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased()).font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary).padding(.leading, 6)
-            VStack(spacing: 0, content: content).padding(.horizontal, 14).deskPanel()
-        }
-    }
-    private func toolPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0) {
-            NativeCommandReadout().padding(12)
-                .background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 13))
-                .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(model.demoMode ? DeskPalette.accent : DeskPalette.rule) }
-                .padding(.horizontal, 18).padding(.bottom, 8)
-            content()
-        }
-    }
-
-    private func row<Destination: View>(_ title: String, _ subtitle: String, _ icon: String, @ViewBuilder destination: () -> Destination) -> some View {
-        NavigationLink(destination: destination().toolbar(.visible, for: .navigationBar)) {
-            HStack(spacing: 14) {
-                Image(systemName: icon).font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(DeskPalette.accent).frame(width: 30)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 16, weight: .medium)).foregroundStyle(.white)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
-            }.padding(.vertical, 12).contentShape(Rectangle())
-        }.buttonStyle(.plain).simultaneousGesture(TapGesture().onEnded { model.haptic() })
     }
 }
 
@@ -2085,7 +2159,7 @@ private struct NativeWheelsView: View {
                     HStack { Text("Channel \(channel) · Live").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Refresh") { model.requestParameters(channel) } }
                     if model.selectedChannels.count > 1 { Text("Values show channel \(channel). Wheels adjust the console selection.").font(.caption).foregroundStyle(.secondary) }
                 }
-                if paramsForCategory.isEmpty { Text("Select a fixture on the console to see its supported controls.").font(.subheadline).foregroundStyle(.secondary).deskCard() }
+                if paramsForCategory.isEmpty { Text("Choose a fixture in Quick Control to see its supported controls.").font(.subheadline).foregroundStyle(.secondary).deskCard() }
                 ForEach(paramsForCategory, id: \.self) { param in
                     DeskWheel(param: param, fine: fine)
                 }
@@ -2107,9 +2181,17 @@ private struct NativeWheelsView: View {
                         }.buttonStyle(DeskButtonStyle())
                     }
                 }
+                if !beamOnly {
+                    DisclosureGroup("More movement tools") {
+                        VStack(alignment:.leading,spacing:14) {
+                            NavigationLink("Spread selected fixtures") { NativeCreativeView(initialTab:0) }
+                            NavigationLink("Stage map focus · advanced") { NativeStageFocusView() }
+                        }.font(.subheadline).padding(.top,12)
+                    }.deskCard()
+                }
             }.padding()
         }
-        .navigationTitle(beamOnly ? "Beam & Optics" : "Movement")
+        .navigationTitle(beamOnly ? "Beam & Gobos" : "Movement")
         .onAppear { if let channel = model.selectedChannels.first { model.requestParameters(channel) } }
         .onChange(of: model.selectedChannels) { channels in if let channel = channels.first { model.requestParameters(channel) } }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in if model.ready, let channel = model.selectedChannels.first { model.requestParameters(channel) } }
@@ -2468,6 +2550,11 @@ private struct NativePatchView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                NavigationLink { NativeFixtureQRView() } label: { Label("Scan QR label",systemImage:"qrcode.viewfinder") }
+                Spacer()
+                NavigationLink("Compare fixtures") { NativeFixtureCompareView() }
+            }.font(.subheadline).padding(.horizontal,16).padding(.bottom,8)
+            HStack {
                 TextField("Find channel, type or address", text: $query).textFieldStyle(.roundedBorder)
                 Button { load() } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }.disabled(!model.ready)
             }.padding(.horizontal, 16)
@@ -2599,7 +2686,7 @@ private struct NativeShowBrowser: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 TextField("Search number or label", text: $search).padding(12).background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 12))
                 HStack {
-                    Text("\(keys.count) received" + (model.showCounts[family].map { " · \($0) reported" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                    Text(search.isEmpty ? (model.showCounts[family].map { "\(keys.count) of \($0) loaded" } ?? "Loading show library…") : "\(keys.count) results").font(.caption).foregroundStyle(.secondary)
                     Spacer(); Button("Refresh") { model.requestShow(family) }.disabled(!model.ready)
                 }
                 if family.hasPrefix("cue/"), let list = family.split(separator:"/").last,
@@ -2615,7 +2702,9 @@ private struct NativeShowBrowser: View {
                         }.font(.caption).foregroundStyle(.secondary).padding(.top,8)
                     }.deskCard()
                 }
-                if keys.isEmpty { Text(model.showCounts[family] == 0 ? "No stored items in this show." : "Waiting for console show data…").foregroundStyle(.secondary).padding(.vertical) }
+                if keys.isEmpty {
+                    ContentUnavailableViewCompat(title:!search.isEmpty ? "No matches" : !model.ready ? "Connect to your console" : model.showCounts[family] == 0 ? "Nothing stored yet" : "Waiting for console data",text:!search.isEmpty ? "Try another name or number." : !model.ready ? "Connect in Settings, or enable Test Mode to explore the sample show." : "Use Refresh to request the latest show data.",symbol:!search.isEmpty ? "magnifyingglass" : "list.bullet")
+                }
                 ForEach(keys, id: \.self) { key in
                     NavigationLink { NativeShowItemDetails(key: key) } label: {
                         HStack {
@@ -2681,7 +2770,7 @@ private struct NativeShowItemDetails: View {
                     }.deskCard()
                 } else {
                     detail("Absolute", boolean(3)); detail("Locked", boolean(4))
-                    Button("Apply to console selection") {
+                    Button("Apply to selected channels") {
                         let command = ["fp": "Focus Palette", "cp": "Color Palette", "bp": "Beam Palette", "preset":"Preset"][family] ?? ""
                         guard !command.isEmpty else { return }
                         model.send("/eos/newcmd", ["\(command) \(number) Enter"])
@@ -2706,6 +2795,8 @@ private struct NativeShowItemDetails: View {
 
 private struct NativeCreativeView: View {
     @EnvironmentObject var model: NativeRemoteModel
+    @State private var tab: Int
+    init(initialTab:Int = 0) { _tab = State(initialValue:initialTab) }
     @State private var parameter = "pan"
     @State private var start = -30.0
     @State private var end = 30.0
@@ -2717,8 +2808,10 @@ private struct NativeCreativeView: View {
     private var channels: [Int] { model.selectedChannels.sorted() }
     var body: some View {
         Form {
+            Section { Picker("Tool",selection:$tab) { Text("Spread").tag(0); Text("Effects").tag(1) }.pickerStyle(.segmented) }
+            if tab == 0 {
             Section("Spread selected fixtures") {
-                Text(channels.isEmpty ? "Select channels on the console first." : "Channels " + channels.map(String.init).joined(separator: ", ")).font(.subheadline).foregroundStyle(.secondary)
+                Text(channels.isEmpty ? "Choose channels in Quick Control first." : "Channels " + channels.map(String.init).joined(separator: ", ")).font(.subheadline).foregroundStyle(.secondary)
                 Picker("Parameter", selection: $parameter) { Text("Pan").tag("pan"); Text("Tilt").tag("tilt"); Text("Intensity").tag("intens") }
                 numeric("First channel", value: $start)
                 numeric("Last channel", value: $end)
@@ -2728,6 +2821,8 @@ private struct NativeCreativeView: View {
                     catch { model.error = error.localizedDescription }
                 }.disabled(!model.ready || channels.isEmpty || (parameter == "intens" && (![start,end].allSatisfy { (0...100).contains($0) })))
             }
+            }
+            if tab == 1 {
             Section("Stored effects") {
                 NavigationLink("Browse named effects") { NativeShowBrowser(family:"fx",title:"Effects") }
                 NavigationLink("Browse presets") { NativeShowBrowser(family:"preset",title:"Presets") }
@@ -2736,7 +2831,8 @@ private struct NativeCreativeView: View {
                     .disabled(!model.ready || channels.isEmpty || (Int(effect).map { !(1...999999).contains($0) } ?? true))
                 Button("Stop effects on selection") { model.sendBatch([OSCMessage(address: "/eos/key/stop_effect_button", parameters: [1.0]), OSCMessage(address: "/eos/key/stop_effect_button", parameters: [0.0]), OSCMessage(address: "/eos/key/enter", parameters: [1.0]), OSCMessage(address: "/eos/key/enter", parameters: [0.0])]) }.disabled(!model.ready || channels.isEmpty)
             }
-            Section("Mapped effect controls") {
+            Section {
+                DisclosureGroup("Advanced · mapped rate & size faders") {
                 Text("In console Fader Config, assign Effect Rate and Effect Size to the faders below. These sliders drive those mapped faders; they do not edit the base effect.").font(.caption).foregroundStyle(.secondary)
                 Stepper("Rate · fader \(rateFader)", value: $rateFader, in: 1...40)
                 Slider(value: $rate, in: 0...1, onEditingChanged: { editing in if !editing { model.send("/eos/fader/1/\(rateFader)", [rate]) } }).accessibilityLabel("Mapped effect rate")
@@ -2744,9 +2840,12 @@ private struct NativeCreativeView: View {
                 Stepper("Size · fader \(sizeFader)", value: $sizeFader, in: 1...40)
                 Slider(value: $size, in: 0...1, onEditingChanged: { editing in if !editing { model.send("/eos/fader/1/\(sizeFader)", [size]) } }).accessibilityLabel("Mapped effect size")
                 Button("Home size fader") { model.send("/eos/fader/1/\(sizeFader)/home") }
+                }
             }.disabled(!model.ready)
-        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Fan & Effects")
-        .onAppear { if model.ready { model.send("/eos/fader/1/config/1/40") } }
+            }
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle(tab == 0 ? "Spread Fixtures" : "Effects")
+        .onAppear { if model.ready && tab == 1 { model.send("/eos/fader/1/config/1/40") } }
+        .onChange(of:tab) { value in if model.ready && value == 1 { model.send("/eos/fader/1/config/1/40") } }
     }
     private func numeric(_ title: String, value: Binding<Double>) -> some View { HStack { Text(title); Spacer(); TextField(title, value: value, format: .number).multilineTextAlignment(.trailing).keyboardType(.numbersAndPunctuation).frame(width: 100) } }
 }
@@ -2794,7 +2893,7 @@ private struct NativeStageFocusView: View {
                 Button("Focus selection here") { apply(force:true) }.buttonStyle(.borderedProminent).disabled(!calibrated || !model.ready || model.selectedChannels.isEmpty)
                 Text("Manual position control; it does not track actors. The console computes fixture movement.").font(.caption).foregroundStyle(.secondary)
             }.padding()
-        }.navigationTitle("Stage Focus")
+        }.navigationTitle("Stage Map Focus")
     }
     private func dimension(_ title: String, value: Binding<Double>) -> some View { VStack(alignment:.leading) { Text(title).font(.caption).foregroundStyle(.secondary); TextField(title,value:value,format:.number).keyboardType(.numbersAndPunctuation).textFieldStyle(.roundedBorder) } }
     private func apply(force: Bool = false) {
@@ -2963,7 +3062,7 @@ private struct NativeShowControlView: View {
                 Text("Sends separate lighting and sound commands. This is not frame-synchronized playback. Rehearse the timing before using it in a show.").font(.caption).foregroundStyle(.secondary)
             }
             if !status.isEmpty { Section("Status") { Text(status) } }
-        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("Show Control")
+        }.scrollContentBackground(.hidden).background(DeskPalette.background).navigationTitle("QLab Sound & Video")
         .onDisappear { link?.cancel(); link = nil; sending = false }
     }
     private func start(linked:Bool) {
