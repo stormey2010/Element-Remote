@@ -139,7 +139,7 @@ public final class OSCStreamDecoder {
 
 /// Commands shared by the native UI and protocol tests, checked against Element 2.9.
 public enum EosCommands {
-    public static let supportedKeys: Set<String> = ["record", "cue", "sub", "go_to_cue", "chan", "group", "\\", "highlight", "sneak", "+", "thru", "-", "delay", "time", "rem_dim", "home", "level", "out", "@", "full", "clear_cmd", ".", "enter", "macro", "effect", "recall_from", "park", "select_last", "select_manual", "check", "last", "next", "go_0", "stop", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    public static let supportedKeys: Set<String> = ["record", "cue", "sub", "go_to_cue", "chan", "group", "\\", "highlight", "sneak", "+", "thru", "-", "delay", "time", "rem_dim", "home", "level", "out", "@", "full", "clear_cmd", ".", "enter", "macro", "effect", "recall_from", "park", "address", "select_last", "select_manual", "check", "last", "next", "go_0", "stop", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
     public static func keyTap(_ name: String, edges: Bool = true) throws -> [OSCMessage] {
         guard supportedKeys.contains(name) else { throw OSCWireError.invalid("Unverified Eos key: \(name)") }
         if !edges { return [OSCMessage(address: "/eos/key/" + name, parameters: [])] }

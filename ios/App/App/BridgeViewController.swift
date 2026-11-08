@@ -4,6 +4,7 @@ import Darwin
 import UIKit
 import AVFoundation
 import CoreImage.CIFilterBuiltins
+import UniformTypeIdentifiers
 
 struct ConsoleProfile: Identifiable, Codable, Equatable {
     var id: UUID
@@ -1047,7 +1048,7 @@ struct CueHistoryItem: Identifiable, Equatable {
     func applyUserMode() {
         UserDefaults.standard.set(independentUser, forKey:"element.independentUser")
         session = UUID(); selectedChannels = []; activeChannels = "No channels selected"; commandLine = "Waiting for user feedback…"; commandError = false; movementAvailable = false; colorAvailable = false; fixtureParameters = [:]; emitters = [:]; oscUser = nil
-        feedback = feedback.filter { !$0.key.hasPrefix("/eos/out/param/") && !$0.key.hasPrefix("/eos/out/active/") && !$0.key.hasPrefix("/eos/out/color/") }
+        feedback = feedback.filter { !$0.key.hasPrefix("/eos/out/param/") && !$0.key.hasPrefix("/eos/out/active/") && !$0.key.hasPrefix("/eos/out/color/") && !$0.key.hasPrefix("/eos/out/softkey/") }
         if demoMode { oscUser = independentUser ? 2 : 1; return }
         guard ready else { return }
         send(EosCapabilities.userSelection(independent:independentUser))
@@ -1173,7 +1174,7 @@ private struct ConsoleKey: Identifiable {
     init(_ title: String, _ address: String, _ color: Color = .gray) { self.title = title; self.address = address; self.color = color }
 }
 
-private let selectionKeys: [ConsoleKey] = [.init("Macro", "macro"), .init("Effect", "effect"), .init("Recall From", "recall_from"), .init("Park", "park"), .init("Select Last", "select_last"), .init("Select Man", "select_manual"), .init("Last", "last"), .init("Next", "next")]
+private let selectionKeys: [ConsoleKey] = [.init("Macro", "macro"), .init("Effect", "effect"), .init("Recall From", "recall_from"), .init("Park", "park"), .init("Address", "address"), .init("Select Last", "select_last"), .init("Select Man", "select_manual"), .init("Last", "last"), .init("Next", "next")]
 
 private enum DeskPalette {
     static var nightVision: Bool { UserDefaults.standard.bool(forKey: "element.nightVision") }
@@ -1263,6 +1264,7 @@ struct NativeRemoteView: View {
     @State private var showSettings = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var selectedTab = 0
     @State private var paths: [String: [RemoteTool]] = [:]
 
@@ -1329,13 +1331,23 @@ struct NativeRemoteView: View {
                     }
             }.frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
-        .padding(.top, horizontalSizeClass == .regular ? 56 : 0)
+        .padding(.top, horizontalSizeClass == .regular ? 8 : 0)
         .background(DeskPalette.background.ignoresSafeArea())
         .alert("Console", isPresented: Binding(get: { !model.error.isEmpty }, set: { if !$0 { model.error = "" } })) {
             Button("OK", role: .cancel) { model.error = "" }
         } message: { Text(model.error) }
     }
-    private func screenHeader(_ title: String) -> some View {
+    @ViewBuilder private func screenHeader(_ title: String) -> some View {
+        if verticalSizeClass == .compact {
+            HStack(spacing:14) {
+                Text(title).font(.system(size:22,weight:.semibold)).tracking(-0.5).fixedSize()
+                if title == "Console" || !(paths[title] ?? []).isEmpty {
+                    NativeCommandReadout().padding(.horizontal,10).padding(.vertical,6).background(DeskPalette.surface,in:RoundedRectangle(cornerRadius:10)).frame(maxWidth:.infinity)
+                } else { Spacer() }
+                if model.demoMode { Text("TEST").font(.caption2.weight(.semibold)).foregroundStyle(DeskPalette.accent) }
+                Button { showSettings = true } label: { Image(systemName:"gearshape").frame(width:44,height:44) }.buttonStyle(.plain).accessibilityLabel("Settings")
+            }.padding(.horizontal,16).background(DeskPalette.background)
+        } else {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Text(title).font(.system(size: 32, weight: .semibold)).tracking(-0.9)
@@ -1387,6 +1399,7 @@ struct NativeRemoteView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         }.background(DeskPalette.background).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
 }
@@ -1615,8 +1628,33 @@ private struct NativeConsoleView: View {
     var body: some View {
         GeometryReader { geometry in
             let height = min(76.0, max(48.0, (geometry.size.height - 164) / 7.0))
+            if geometry.size.width > geometry.size.height && geometry.size.width >= 600 {
+                HStack(alignment:.top,spacing:16) {
+                    ScrollView {
+                        VStack(spacing:10) {
+                            NativeSoftkeysView()
+                            grid([.init("Record","record",.red),.init("Cue","cue",.blue),.init("Sub","sub",.green),.init("Chan","chan",.orange)],count:4,height:44)
+                            grid([.init("Rem Dim","rem_dim"),.init("Go to Cue","go_to_cue"),.init("Group","group"),.init("Out","out")],count:4,height:44)
+                            grid([.init("/","\\"),.init("+","+"),.init("−","-"),.init("Thru","thru")],count:4,height:44)
+                            HStack(spacing:10) {
+                                NavigationLink(value:RemoteTool.movement) { toolLabel("Movement","move.3d") }
+                                NavigationLink(value:RemoteTool.color) { toolLabel("Color","paintpalette") }
+                            }.buttonStyle(DeskButtonStyle())
+                            DisclosureGroup("More keys") { grid(selectionKeys + [.init("Highlight","highlight"),.init("Home","home"),.init("Delay","delay"),.init("Time","time"),.init("Level","level")],count:4,height:44) }.font(.subheadline).foregroundStyle(.secondary)
+                        }.padding(.bottom,16)
+                    }.frame(width:max(280,geometry.size.width*0.46))
+                    ScrollView {
+                        grid([.init("7","7"),.init("8","8"),.init("9","9"),.init("Full","full"),
+                              .init("4","4"),.init("5","5"),.init("6","6"),.init("Sneak","sneak"),
+                              .init("1","1"),.init("2","2"),.init("3","3"),.init("At","@"),
+                              .init("Clear","clear_cmd"),.init("0","0"),.init(".","."),.init("Enter","enter",DeskPalette.accent)],count:4,height:max(44,min(62,(geometry.size.height-40)/4)))
+                            .padding(.bottom,16)
+                    }
+                }.padding(.horizontal,16).padding(.top,8)
+            } else {
             ScrollView {
                 VStack(spacing: 16) {
+                    NativeSoftkeysView()
                     grid([.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)], count: 4, height: height)
                     VStack(spacing: 8) {
                         grid([.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group"), .init("Out", "out")], count: 4, height: height)
@@ -1638,6 +1676,7 @@ private struct NativeConsoleView: View {
                         grid(selectionKeys + [.init("Highlight", "highlight"), .init("Delay", "delay"), .init("Time", "time"), .init("Home", "home"), .init("Level", "level")], count: 3, height: 44)
                     }.font(.subheadline).foregroundStyle(.secondary).padding(.top, 36)
                 }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 24)
+            }
             }
         }
     }
@@ -1683,7 +1722,7 @@ private struct NativeFadersView: View {
             .onChange(of: model.ready) { ready in if ready { model.send("/eos/fader/1/config/1/40") } }
     }
     private var grid: some View {
-        LazyVStack(spacing: 0) {
+        LazyVGrid(columns:[GridItem(.adaptive(minimum:300),spacing:12)],spacing:12) {
             ForEach((bank*10+1)...(bank*10+10), id: \.self) { n in
                 VStack(spacing: 3) {
                     HStack(spacing: 12) {
@@ -1705,10 +1744,9 @@ private struct NativeFadersView: View {
                         else { individualSessions.removeValue(forKey: n) }
                     })
                         .accessibilityLabel("Fader \(n) level").disabled(!model.ready)
-                }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 8)
-                if n != bank*10+10 { Divider().padding(.horizontal, 12) }
+                }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 8).deskPanel()
             }
-        }.deskPanel()
+        }
     }
     private func faderValue(_ number: Int) -> Double {
         let value = model.feedback["/eos/out/fader/1/\(number)"]?.first ?? model.feedback["/eos/fader/1/\(number)"]?.first
@@ -1755,8 +1793,11 @@ private struct NativePlaybackView: View {
     @EnvironmentObject var model: NativeRemoteModel
     @State private var cue = ""
     var body: some View {
+        GeometryReader { geometry in
+            let layout:AnyLayout = geometry.size.width > 650 ? AnyLayout(HStackLayout(alignment:.top,spacing:16)) : AnyLayout(VStackLayout(spacing:16))
         ScrollView {
-            VStack(spacing: 16) {
+            layout {
+            VStack(spacing:16) {
                 NavigationLink { NativeCueListsView() } label: {
                     HStack { Label("Browse all cues", systemImage: "list.bullet"); Spacer(); Image(systemName: "chevron.right") }.deskCard()
                 }.buttonStyle(.plain)
@@ -1776,6 +1817,8 @@ private struct NativePlaybackView: View {
                         Spacer()
                     }
                 }.deskCard()
+            }.frame(maxWidth:.infinity)
+            VStack(spacing:16) {
                 HStack(spacing: 12) {
                     Button { model.key("stop") } label: { Label("Stop / Back", systemImage: "pause").frame(maxWidth: .infinity, minHeight: 64) }
                         .buttonStyle(DeskButtonStyle(accent: .red))
@@ -1812,7 +1855,9 @@ private struct NativePlaybackView: View {
                         }
                     }.deskCard()
                 }
+            }.frame(maxWidth:.infinity)
             }.padding(16)
+        }
         }
     }
 }
@@ -1957,10 +2002,11 @@ private struct NativeConsoleEditor: View {
 }
 
 private enum AppTool: String, CaseIterable, Identifiable {
-    case quick, movement, color, emitters, beam, spread, effects, stage, presets, monitor, timeline, qlab, workspaces, patch, compare, qr, health
+    case quick, movement, color, emitters, beam, spread, effects, stage, presets, monitor, timeline, qlab, workspaces, patch, compare, qr, health, magic
     var id: String { rawValue }
     private var info: (String,String,String,String,String) {
         switch self {
+        case .magic: return ("Show & playback","Magic Sheets","Import and view a console-exported sheet image","square.grid.3x3","layout stage plot viewer")
         case .quick: return ("Fixtures","Quick Control","Levels, park and common channel actions","bolt.fill","intensity brightness unpark")
         case .movement: return ("Fixtures","Movement","Pan, tilt and fine adjustment","move.3d","position focus wheels")
         case .color: return ("Fixtures","Color","Color picker and named palettes","paintpalette","hue saturation gel")
@@ -2061,6 +2107,7 @@ private struct NativeMoreView: View {
     private func toggle(_ tool:AppTool) { model.haptic(); var items = pinned; if items.contains(tool) { items.removeAll { $0 == tool } } else { items.append(tool) }; favorites = items.map(\.rawValue).joined(separator:",") }
     @ViewBuilder private func destination(_ tool:AppTool)->some View {
         switch tool {
+        case .magic: NativeMagicSheetView()
         case .quick: NativeQuickControlView().navigationTitle("Quick Control")
         case .movement: NativeCommandTool { NativeWheelsView() }
         case .color: NativeCommandTool { NativeColorView() }
@@ -3242,4 +3289,120 @@ private struct NativeConsoleHealthView: View {
         .onReceive(Timer.publish(every:5,on:.main,in:.common).autoconnect()) { _ in if model.ready { model.requestDiagnostics() } }
     }
     private func field(_ title:String,_ value:String)->some View { HStack(alignment:.top) { Text(title).foregroundStyle(.secondary); Spacer(); Text(value.isEmpty ? "Not reported" : value).multilineTextAlignment(.trailing) }.font(.subheadline) }
+}
+
+
+// Labels always come from the active OSC user; no guessed function mapping.
+private struct NativeSoftkeysView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @Environment(\.verticalSizeClass) private var sizeClass
+    @State private var page = 0
+    private func label(_ index: Int) -> String { model.text("/eos/out/softkey/\(index)").trimmingCharacters(in: .whitespacesAndNewlines) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Softkeys").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(page == 0 ? "1–6 ›" : "7–12 ›") { page = 1 - page }
+                    .font(.caption).accessibilityLabel("Switch softkey page")
+            }
+            if (1...12).allSatisfy({ label($0).isEmpty }) {
+                Text(model.demoMode ? "Softkeys require live console context" : "Waiting for console softkeys")
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 44)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: sizeClass == .compact ? 6 : 3), spacing: 6) {
+                    ForEach((page * 6 + 1)...(page * 6 + 6), id: \.self) { index in
+                        Button {
+                            guard model.ready, !model.demoMode, !label(index).isEmpty else { return }
+                            model.send("/eos/softkey/\(index)", [Float(1)])
+                            model.send("/eos/softkey/\(index)", [Float(0)])
+                        } label: {
+                            Text(label(index).isEmpty ? "—" : label(index)).font(.system(size: 12, weight: .medium))
+                                .multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: 44)
+                        }.buttonStyle(DeskButtonStyle()).disabled(!model.ready || model.demoMode || label(index).isEmpty)
+                    }
+                }
+            }
+        }.onChange(of: model.session) { _ in page = 0 }
+    }
+}
+
+private struct NativeMagicSheetView: View {
+    @State private var importing = false
+    @State private var image: UIImage?
+    @State private var error: String?
+    @AppStorage("element.magicSheet.name") private var name = "Magic Sheet"
+    private var imageURL: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("magic-sheet.png") }
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name).font(.headline).lineLimit(1)
+                    Text("Imported image · read-only").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Import image") { importing = true }.buttonStyle(.bordered)
+            }.padding(.horizontal)
+            if let image {
+                MagicSheetZoomView(image: image).accessibilityLabel("Magic Sheet image. Pinch to zoom and drag to pan.")
+                Text("Pinch to zoom · drag to pan · double-tap to fit").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Spacer()
+                Image(systemName: "square.grid.3x3").font(.system(size: 48)).foregroundStyle(DeskPalette.accent)
+                Text("Bring your Magic Sheet with you").font(.headline)
+                Text("On Element, open the Magic Sheet editor’s import/export menu and save the sheet as an image. Transfer it to Files, then import it here.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
+                Spacer()
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
+            Text("Image contents do not update live. Import again after changing the console layout.")
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal).padding(.bottom)
+        }.navigationTitle("Magic Sheets")
+        .onAppear { image = UIImage(contentsOfFile: imageURL.path) }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.png, .jpeg], allowsMultipleSelection: false) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let resource = try url.resourceValues(forKeys: [.fileSizeKey])
+                guard (resource.fileSize ?? 0) <= 25_000_000 else { throw SheetImportError.tooLarge }
+                let data = try Data(contentsOf: url)
+                guard let imported = UIImage(data: data), imported.size.width * imported.size.height <= 40_000_000,
+                      let png = imported.pngData() else { throw SheetImportError.invalid }
+                try png.write(to: imageURL, options: .atomic)
+                image = imported; name = url.deletingPathExtension().lastPathComponent; error = nil
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    private enum SheetImportError: LocalizedError {
+        case tooLarge, invalid
+        var errorDescription: String? { self == .tooLarge ? "Choose an image smaller than 25 MB." : "Choose a valid PNG or JPEG image up to 40 megapixels." }
+    }
+}
+
+private struct MagicSheetZoomView: UIViewRepresentable {
+    let image: UIImage
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = UIScrollView()
+        scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 8
+        scroll.delegate = context.coordinator
+        let picture = UIImageView(); picture.contentMode = .scaleAspectFit
+        scroll.addSubview(picture); context.coordinator.picture = picture
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.fit(_:)))
+        tap.numberOfTapsRequired = 2; scroll.addGestureRecognizer(tap)
+        return scroll
+    }
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        guard let picture = context.coordinator.picture else { return }
+        if picture.image !== image { scroll.setZoomScale(1, animated: false); picture.image = image }
+        DispatchQueue.main.async {
+            if scroll.zoomScale == 1 { picture.frame = scroll.bounds; scroll.contentSize = scroll.bounds.size }
+        }
+    }
+    class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var picture: UIImageView?
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
+        @objc func fit(_ gesture: UITapGestureRecognizer) { (gesture.view as? UIScrollView)?.setZoomScale(1, animated: true) }
+    }
 }

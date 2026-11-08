@@ -11,6 +11,7 @@ public struct EosPracticeDesk {
     public private(set) var checking = false
     public private(set) var highlighted = false
     public private(set) var parked: Set<Int> = []
+    public private(set) var addresses: [Int:Double] = [:]
     private var previousSelection: EosChannelSelection?
     private var remainderSnapshot: [Int: [String: Double]]?
     public static let groups: [Int: String] = [1: "1 Thru 4", 2: "5 Thru 8", 3: "9 Thru 12"]
@@ -36,7 +37,7 @@ public struct EosPracticeDesk {
         }
         if entry.isEmpty && ["highlight", "rem_dim"].contains(key) { try execute(key == "highlight" ? "High" : "Rem_Dim"); return }
         if key == "enter" { try execute(entry); return }
-        let labels = ["chan": "Chan", "@": "At", "full": "Full", "out": "Out", "level": "Level", "thru": "Thru", "cue": "Cue", "sub": "Sub", "group": "Group", "record": "Record", "go_to_cue": "Go_To_Cue", "rem_dim": "Rem_Dim", "highlight": "High", "sneak": "Sneak", "home": "Home", "check": "Check", "park": "Park"]
+        let labels = ["chan": "Chan", "@": "At", "full": "Full", "out": "Out", "level": "Level", "thru": "Thru", "cue": "Cue", "sub": "Sub", "group": "Group", "record": "Record", "go_to_cue": "Go_To_Cue", "rem_dim": "Rem_Dim", "highlight": "High", "sneak": "Sneak", "home": "Home", "check": "Check", "park": "Park", "address":"Address"]
         let digit = key.count == 1 && key.first?.isNumber == true
         if digit {
             if entry.isEmpty { entry = "Chan " }
@@ -55,6 +56,17 @@ public struct EosPracticeDesk {
     public mutating func execute(_ command: String) throws {
         let tokens = command.split(whereSeparator: { $0.isWhitespace }).map(String.init).filter { $0.lowercased() != "enter" }
         guard !tokens.isEmpty else { return }
+        if tokens[0].lowercased() == "address" {
+            let split = tokens.dropFirst().firstIndex { Int($0) == nil && !["thru","+","-"].contains($0.lowercased()) } ?? tokens.endIndex
+            let target = try EosChannelSelection(tokens[1..<split].joined(separator:" "))
+            let action = tokens[split...].map { $0.lowercased() }.filter { $0 != "at" }
+            if !action.isEmpty {
+                let value: Double? = action == ["full"] ? 100 : action == ["out"] ? 0 : action.count == 1 ? Double(action[0]) : nil
+                guard let value, (0...100).contains(value) else { throw OSCWireError.invalid("Enter an address level from 0 to 100") }
+                for address in target.channels { addresses[address] = value }
+            }
+            entry = ""; commandLine = tokens.joined(separator:" "); return
+        }
         var next = selection
         var rest = tokens
         if tokens[0].lowercased() == "group" {
