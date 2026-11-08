@@ -1647,7 +1647,7 @@ private struct NativeConsoleView: View {
                         grid([.init("7","7"),.init("8","8"),.init("9","9"),.init("Full","full"),
                               .init("4","4"),.init("5","5"),.init("6","6"),.init("Sneak","sneak"),
                               .init("1","1"),.init("2","2"),.init("3","3"),.init("At","@"),
-                              .init("Clear","clear_cmd"),.init("0","0"),.init(".","."),.init("Enter","enter",DeskPalette.accent)],count:4,height:max(44,min(62,(geometry.size.height-40)/4)))
+                              .init("Clear","clear_cmd"),.init("0","0"),.init(".","."),.init("Enter","enter",DeskPalette.accent)],count:4,height:max(44.0,min(62.0,(Double(geometry.size.height)-40.0)/4.0)))
                             .padding(.bottom,16)
                     }
                 }.padding(.horizontal,16).padding(.top,8)
