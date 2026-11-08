@@ -527,3 +527,43 @@ public struct EosConsoleUser: Identifiable {
         }
     }
 }
+
+
+/// Validates user-entered workflow targets before constructing OSC commands.
+public enum EosWorkflowCommands {
+    public static func typedCommand(_ text: String) throws -> OSCMessage {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count <= 1024, !text.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { throw OSCWireError.invalid("Enter a single console command up to 1024 characters") }
+        let command = text.first?.isNumber == true ? "Chan " + text : text
+        return OSCMessage(address: "/eos/newcmd", parameters: [command.lowercased().hasSuffix("enter") ? command : command + " Enter"])
+    }
+    public static func cueNotes(key: String, text: String) throws -> OSCMessage {
+        let parts = key.split(separator: "/").map(String.init)
+        guard parts.count == 4, parts[0] == "cue", let list = Int(parts[1]), list > 0,
+              parts[2].range(of: "^[0-9]{1,6}(\\.[0-9]{1,3})?$", options: .regularExpression) != nil,
+              let part = Int(parts[3]), part >= 0, text.utf8.count <= 8192 else { throw OSCWireError.invalid("Invalid cue or notes too long") }
+        return OSCMessage(address: "/eos/set/cue/" + parts.dropFirst().joined(separator: "/") + "/notes", parameters: [text])
+    }
+    public static func recordPalette(family: String, number: String, channels: [Int], label: String) throws -> [OSCMessage] {
+        let names = ["fp": "Focus_Palette", "cp": "Color_Palette", "bp": "Beam_Palette"]
+        guard let name = names[family], let target = Int(number), (1...999999).contains(target), !channels.isEmpty,
+              channels.count <= 512, channels.allSatisfy({ (1...999999).contains($0) }), label.count <= 128,
+              !label.unicodeScalars.contains(where: { $0.value < 32 }) else { throw OSCWireError.invalid("Choose a palette number, label and valid fixture selection") }
+        let selection = Array(Set(channels)).sorted().map(String.init).joined(separator: " + ")
+        var messages = [OSCMessage(address: "/eos/newcmd", parameters: ["Chan \(selection) Record \(name) \(target) Enter"])]
+        if !label.isEmpty { messages.append(OSCMessage(address: "/eos/set/\(family)/\(target)/label", parameters: [label])) }
+        return messages
+    }
+    public static func exactParameter(_ name: String, value: Double, channels: [Int], capabilities: [Int: [EosFixtureParameter]]) throws -> [OSCMessage] {
+        guard value.isFinite, !channels.isEmpty, channels.count <= 12,
+              name.range(of: "^[a-z0-9_]+$", options: .regularExpression) != nil else { throw OSCWireError.invalid("Choose up to 12 fixtures and a finite parameter value") }
+        return try Array(Set(channels)).sorted().map { channel in
+            guard (1...999999).contains(channel), let parameter = capabilities[channel]?.first(where: { $0.oscName == name }), value >= parameter.minimum, value <= parameter.maximum else { throw OSCWireError.invalid("Value is unsupported or outside the reported range for channel \(channel)") }
+            return OSCMessage(address: "/eos/chan/\(channel)/param/\(name)", parameters: [value])
+        }
+    }
+    public static func submaster(_ number: Int, action: String) throws -> [OSCMessage] {
+        guard (1...999999).contains(number), ["fire", "home", "full", "out"].contains(action) else { throw OSCWireError.invalid("Unsupported submaster action") }
+        return [1.0, 0.0].map { OSCMessage(address: "/eos/sub/\(number)/\(action)", parameters: [$0]) }
+    }
+}

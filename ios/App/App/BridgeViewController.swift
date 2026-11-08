@@ -536,13 +536,24 @@ struct CueHistoryItem: Identifiable, Equatable {
     }
     @Published var commandError = false
     @Published var activeChannels = "No channel feedback yet"
-    @Published var selectedChannels: [Int] = []
+    @Published var recentSelections: [[Int]] = []
+    @Published var selectedChannels: [Int] = [] {
+        didSet {
+            guard selectedChannels != oldValue else { return }
+            session = UUID()
+            if !selectedChannels.isEmpty {
+                recentSelections = [selectedChannels] + recentSelections.filter { $0 != selectedChannels }
+                recentSelections = Array(recentSelections.prefix(8))
+            }
+        }
+    }
     @Published var movementAvailable = false
     @Published var colorAvailable = false
     @Published var feedback: [String: [Any]] = [:]
     @Published var session = UUID()
     @Published var selection: Set<Int> = []
     @Published var fixtures: [String: EosFixtureRecord] = [:]
+    @Published var fixtureReceivedAt: [Int: Date] = [:]
     @Published var emitters: [Int: [EosFixtureParameter]] = [:]
     @Published var processors: [Int: EosProcessorHealth] = [:]
     @Published var healthReceivedAt: Date?
@@ -571,6 +582,8 @@ struct CueHistoryItem: Identifiable, Equatable {
     
     // Simulation state for Offline Demo Mode
     private var practiceDesk = EosPracticeDesk()
+    private var practiceShowOverrides: [String: [Int: Any]] = [:]
+    private var practiceSubBumps: [Int: Double] = [:]
     private var demoGeneration = UUID()
     private var demoPlaybackID = UUID()
     private var demoFadeTimer: Timer?
@@ -727,6 +740,8 @@ struct CueHistoryItem: Identifiable, Equatable {
         if let fixture = self.fixtureAccumulator.receive(OSCMessage(address: address, parameters: values)) {
             if self.fixtures.count >= 512, self.fixtures[fixture.id] == nil, let first = self.fixtures.keys.first { self.fixtures.removeValue(forKey: first) }
             self.fixtures[fixture.id] = fixture
+            self.fixtureReceivedAt[fixture.channel] = Date()
+            if self.fixtureReceivedAt.count > 512 { self.fixtureReceivedAt = self.fixtureReceivedAt.filter { Date().timeIntervalSince($0.value) < 15 } }
         }
         if recordRehearsal, let detail = EosRehearsalEvent.detail(address: address, values: values) { logRehearsal(detail) }
         receiveShowData(address, values)
@@ -792,6 +807,39 @@ struct CueHistoryItem: Identifiable, Equatable {
             if path.count == 5, path[1] == "chan", let channel = Int(path[2]), path[3] == "param", let value = values.first as? NSNumber {
                 practiceDesk.setChannelParameter(channel, name:path[4], value:value.doubleValue); syncPracticeDesk(); return
             }
+            if address.hasPrefix("/eos/set/cue/"), address.hasSuffix("/notes"), path.count == 7, let note = values.first as? String {
+                let key = path[2...5].joined(separator: "/")
+                practiceShowOverrides[key, default: [:]][27] = note
+                showData.receive(OSCMessage(address: "/eos/out/get/\(key)/list/27/1", parameters: [note])); return
+            }
+            if address.hasPrefix("/eos/set/"), address.hasSuffix("/label"), path.count == 5, ["fp","cp","bp"].contains(path[2]), let label = values.first as? String {
+                practiceShowOverrides["\(path[2])/\(path[3])", default: [:]][2] = label
+                showData.receive(OSCMessage(address: "/eos/out/get/\(path[2])/\(path[3])/list/2/1", parameters: [label])); return
+            }
+            if path.count >= 3, path[1] == "sub", Int(path[2]) != nil {
+                if path.count == 3, let level = values.first as? NSNumber { feedback["/eos/out/sub/\(path[2])"] = [level.doubleValue] }
+                else if path.count == 4, let sub = Int(path[2]), let edge = values.first as? NSNumber {
+                    let key = "/eos/out/sub/\(sub)"
+                    if path[3] == "fire" {
+                        if edge.doubleValue != 0 { practiceSubBumps[sub] = (feedback[key]?.first as? NSNumber)?.doubleValue ?? 0; feedback[key] = [1.0] }
+                        else { feedback[key] = [practiceSubBumps.removeValue(forKey: sub) ?? 0] }
+                    } else if edge.doubleValue != 0 { feedback[key] = [path[3] == "full" ? 1.0 : 0.0] }
+                }
+                return
+            }
+            if address == "/eos/newcmd", let text = values.first as? String, text.contains(" Record "), text.contains("_Palette ") {
+                let tokens = text.split(separator: " ").map(String.init)
+                if let marker = tokens.firstIndex(of: "Record"), marker + 2 < tokens.count,
+                   let family = ["Focus_Palette":"fp","Color_Palette":"cp","Beam_Palette":"bp"][tokens[marker+1]] {
+                    let target = tokens[marker+2]
+                    do { try practiceDesk.recordPalette(family: family, number: Int(target) ?? 0) } catch { self.error = error.localizedDescription; return }
+                    practiceShowOverrides["\(family)/\(target)"] = [0:0, 1:UUID().uuidString, 2:""]
+                    showData.receive(OSCMessage(address: "/eos/out/get/\(family)/\(target)/list/0/3", parameters: [0,UUID().uuidString,""]))
+                    showData.receive(OSCMessage(address: "/eos/out/get/\(family)/\(target)/channels/list/0/\(selectedChannels.count+2)", parameters: [0,UUID().uuidString] + selectedChannels.map { $0 as Any }))
+                    practiceDesk.completeExternalCommand(text); syncPracticeDesk()
+                }
+                return
+            }
             if address == "/eos/xyz" { feedback["/eos/out/xyz"] = values; return }
             if address.hasPrefix("/eos/snap/") { commandLine = "Practice workspace recalled"; return }
             if address == "/eos/key/stop_effect_button" { practiceDesk.completeExternalCommand("Stop Effect"); syncPracticeDesk(); return }
@@ -814,6 +862,8 @@ struct CueHistoryItem: Identifiable, Equatable {
                     return
                 }
                 if text.contains("Palette"), let palette = text.split(separator: " ").dropLast().last.flatMap({ Int($0) }) {
+                    let family = text.hasPrefix("Color") ? "cp" : text.hasPrefix("Focus") ? "fp" : "bp"
+                    if practiceDesk.applyPalette(family: family, number: palette) { practiceDesk.completeExternalCommand(text); syncPracticeDesk(); return }
                     if text.hasPrefix("Color") { practiceDesk.setColor([Double(palette * 60 % 360), 80]) }
                     if text.hasPrefix("Focus") { practiceDesk.setParameter("pan", value: Double(palette * 20)); practiceDesk.setParameter("tilt", value: Double(palette * 10)) }
                     if text.hasPrefix("Beam") { practiceDesk.setParameter("zoom", value: Double(palette * 8)) }
@@ -978,6 +1028,7 @@ struct CueHistoryItem: Identifiable, Equatable {
         for channel in channels.prefix(12) { requestParameters(channel) }
         if demoMode {
             for ch in channels {
+                fixtureReceivedAt[ch] = Date()
                 let isLED = ch <= 4, isMover = (5...8).contains(ch)
                 let fixture = EosFixtureRecord(
                     channel: ch,
@@ -1040,12 +1091,14 @@ struct CueHistoryItem: Identifiable, Equatable {
     }
 
     private func clearShowSession() {
+        recentSelections = []; fixtureReceivedAt = [:]; practiceShowOverrides = [:]; practiceSubBumps = [:]
         queryGeneration = UUID(); familyGenerations = [:]
         refreshWork.values.forEach { $0.cancel() }; refreshWork = [:]
         showData = EosShowData(); showCounts = [:]; fixtureParameters = [:]; emitters = [:]; processors = [:]; healthReceivedAt = nil; processorCount = nil; pendingProcessorHealth = nil; oscUser = nil
     }
 
     func applyUserMode() {
+        recentSelections = []
         UserDefaults.standard.set(independentUser, forKey:"element.independentUser")
         session = UUID(); selectedChannels = []; activeChannels = "No channels selected"; commandLine = "Waiting for user feedback…"; commandError = false; movementAvailable = false; colorAvailable = false; fixtureParameters = [:]; emitters = [:]; oscUser = nil
         feedback = feedback.filter { !$0.key.hasPrefix("/eos/out/param/") && !$0.key.hasPrefix("/eos/out/active/") && !$0.key.hasPrefix("/eos/out/color/") && !$0.key.hasPrefix("/eos/out/softkey/") }
@@ -1104,6 +1157,10 @@ struct CueHistoryItem: Identifiable, Equatable {
                     showData.receive(OSCMessage(address: "/eos/out/get/\(key)/channels/list/0/3", parameters: [i-1, "demo", "1 Thru 12"]))
                 }
             }
+            for (key, fields) in practiceShowOverrides where key.hasPrefix(family + "/") {
+                for (offset, value) in fields { showData.receive(OSCMessage(address: "/eos/out/get/\(key)/list/\(offset)/1", parameters: [value])) }
+            }
+            showCounts[family] = showData.records.keys.filter { $0.hasPrefix(family + "/") && $0.split(separator: "/").count == family.split(separator: "/").count + (family.hasPrefix("cue/") ? 2 : 1) }.count
             return
         }
         guard ready else { return }
@@ -1633,6 +1690,7 @@ private struct NativeConsoleView: View {
                     ScrollView {
                         VStack(spacing:10) {
                             NativeSoftkeysView()
+                            NativeConsoleWorkflowBar()
                             grid([.init("Record","record",.red),.init("Cue","cue",.blue),.init("Sub","sub",.green),.init("Chan","chan",.orange)],count:4,height:44)
                             grid([.init("Rem Dim","rem_dim"),.init("Go to Cue","go_to_cue"),.init("Group","group"),.init("Out","out")],count:4,height:44)
                             grid([.init("/","\\"),.init("+","+"),.init("−","-"),.init("Thru","thru")],count:4,height:44)
@@ -1655,6 +1713,7 @@ private struct NativeConsoleView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     NativeSoftkeysView()
+                            NativeConsoleWorkflowBar()
                     grid([.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)], count: 4, height: height)
                     VStack(spacing: 8) {
                         grid([.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group"), .init("Out", "out")], count: 4, height: height)
@@ -2002,10 +2061,13 @@ private struct NativeConsoleEditor: View {
 }
 
 private enum AppTool: String, CaseIterable, Identifiable {
-    case quick, movement, color, emitters, beam, spread, effects, stage, presets, monitor, timeline, qlab, workspaces, patch, compare, qr, health, magic
+    case quick, movement, color, emitters, beam, spread, effects, stage, presets, monitor, timeline, qlab, workspaces, patch, compare, qr, health, magic, work, recordPalette, diagnose
     var id: String { rawValue }
     private var info: (String,String,String,String,String) {
         switch self {
+        case .work: return ("Show & playback","My Work Screens","Save layouts with faders, palettes and cue controls","rectangle.grid.2x2","custom dashboard favorites")
+        case .recordPalette: return ("Looks & movement","Record Palette","Review and store a focus, color or beam look","square.and.arrow.down","record label save")
+        case .diagnose: return ("Diagnostics","Why Is This Light On?","Inspect reported levels and troubleshooting steps","lightbulb","source park manual submaster")
         case .magic: return ("Show & playback","Magic Sheets","Import and view a console-exported sheet image","square.grid.3x3","layout stage plot viewer")
         case .quick: return ("Fixtures","Quick Control","Levels, park and common channel actions","bolt.fill","intensity brightness unpark")
         case .movement: return ("Fixtures","Movement","Pan, tilt and fine adjustment","move.3d","position focus wheels")
@@ -2107,6 +2169,9 @@ private struct NativeMoreView: View {
     private func toggle(_ tool:AppTool) { model.haptic(); var items = pinned; if items.contains(tool) { items.removeAll { $0 == tool } } else { items.append(tool) }; favorites = items.map(\.rawValue).joined(separator:",") }
     @ViewBuilder private func destination(_ tool:AppTool)->some View {
         switch tool {
+        case .work: NativeWorkScreensView()
+        case .recordPalette: NativePaletteRecorder()
+        case .diagnose: NativeLightDiagnosticsView()
         case .magic: NativeMagicSheetView()
         case .quick: NativeQuickControlView().navigationTitle("Quick Control")
         case .movement: NativeCommandTool { NativeWheelsView() }
@@ -2219,6 +2284,8 @@ private struct NativeWheelsView: View {
                         Text("Pan / tilt").font(.caption).foregroundStyle(.secondary)
                     }
                     DeskFocusPad(fine: fine)
+                    NavigationLink("Large focus pad") { NativeFineFocusView() }
+                    NavigationLink("Record a palette") { NativePaletteRecorder() }
                 }
                 
                 HStack {
@@ -2286,6 +2353,7 @@ private struct DeskWheel: View {
             }.font(.caption).tint(Color.gray)
             HStack {
                 if let capability { Text(String(format: "Range %.2f to %.2f", capability.minimum, capability.maximum)).font(.caption2).foregroundStyle(.secondary) }
+                NavigationLink("Set value") { NativeExactParameterView(parameter: param) }.font(.caption)
                 Spacer()
                 Button("Home") { tap("/eos/param/\(param)/home") }.font(.caption)
             }
@@ -2335,9 +2403,11 @@ private struct DeskWheel: View {
 private struct DeskFocusPad: View {
     @EnvironmentObject var model: NativeRemoteModel
     let fine: Bool
+    var height: CGFloat = 260
     @AppStorage("element.focus.invertPan") private var invertPan = false
     @AppStorage("element.focus.invertTilt") private var invertTilt = false
     @AppStorage("element.focus.sensitivity") private var sensitivity = 1.0
+    @AppStorage("element.focus.axis") private var axis = "Both"
     @State private var previous = CGSize.zero
     @State private var residual = CGSize.zero
     @State private var cursor: CGPoint?
@@ -2346,6 +2416,8 @@ private struct DeskFocusPad: View {
     
     var body: some View {
         VStack(spacing: 8) {
+            Picker("Allowed axes", selection: $axis) { ForEach(["Both", "Pan only", "Tilt only"], id: \.self) { Text($0).tag($0) } }.pickerStyle(.segmented)
+            HStack { Text("Sensitivity").font(.caption); Slider(value: $sensitivity, in: 0.25...2, step: 0.25); Text(String(format: "%.2f×", sensitivity)).font(.caption.monospacedDigit()) }
             HStack(spacing: 8) {
                 Button {
                     invertPan.toggle()
@@ -2375,7 +2447,7 @@ private struct DeskFocusPad: View {
                     residual = .zero
                     previous = .zero
                 } label: {
-                    Label("Center", systemImage: "scope")
+                    Label("Reset touch", systemImage: "scope")
                         .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(Color.white.opacity(0.08), in: Capsule())
@@ -2416,8 +2488,8 @@ private struct DeskFocusPad: View {
                     .onChanged { value in
                         if gestureSession == nil { gestureSession = model.session }
                         guard gestureSession == model.session else { return }
-                        residual.width += (value.translation.width - previous.width) * sensitivity
-                        residual.height += (value.translation.height - previous.height) * sensitivity
+                        if axis != "Tilt only" { residual.width += (value.translation.width - previous.width) * sensitivity }
+                        if axis != "Pan only" { residual.height += (value.translation.height - previous.height) * sensitivity }
                         previous = value.translation
                         cursor = CGPoint(
                             x: min(max(value.location.x, 16), geometry.size.width - 16),
@@ -2432,16 +2504,18 @@ private struct DeskFocusPad: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)) }
-            }.frame(height: 260)
-        }
+            }.frame(minHeight: height)
+        }.disabled(!model.ready || model.selectedChannels.isEmpty || !model.movementAvailable)
+        .onChange(of: axis) { _ in previous = .zero; residual = .zero; if gestureSession != nil { gestureSession = UUID() } }
+        .onChange(of: fine) { _ in previous = .zero; residual = .zero; if gestureSession != nil { gestureSession = UUID() } }
         .onChange(of: model.ready) { _ in previous = .zero; residual = .zero; cursor = nil }
     }
     
     private func flush(force: Bool = false) {
-        guard model.ready, gestureSession == nil || gestureSession == model.session else { residual = .zero; return }
+        guard model.ready, !model.selectedChannels.isEmpty, model.movementAvailable, gestureSession == nil || gestureSession == model.session else { residual = .zero; return }
         guard force || (ProcessInfo.processInfo.systemUptime - lastSent) >= 1.0/30 else { return }
-        var pan = Int(residual.width / 5)
-        var tilt = Int(-residual.height / 5)
+        var pan = axis == "Tilt only" ? 0 : Int(residual.width / 5)
+        var tilt = axis == "Pan only" ? 0 : Int(-residual.height / 5)
         if invertPan { pan = -pan }
         if invertTilt { tilt = -tilt }
         let mode = fine ? "fine" : "coarse"
@@ -2791,6 +2865,7 @@ private struct NativeShowItemDetails: View {
                 Text(value(2).isEmpty ? "Unlabeled" : value(2)).font(.title2.weight(.semibold))
                 Text(key.replacingOccurrences(of: "/", with: " · ")).font(.subheadline).foregroundStyle(.secondary)
                 if family == "cue" {
+                    NavigationLink("Edit cue notes") { NativeCueNotesEditor(cueKey: key) }
                     VStack(spacing: 12) {
                         ForEach([3, 5, 7, 9, 11], id: \.self) { index in
                             detail([3: "Up", 5: "Down", 7: "Focus", 9: "Color", 11: "Beam"][index] ?? "", milliseconds(index) + " · delay " + milliseconds(index + 1))
@@ -2814,6 +2889,7 @@ private struct NativeShowItemDetails: View {
                         detail("Mode", value(3)); detail("Fader mode", value(4)); detail("HTP", boolean(5))
                         detail("Exclusive", boolean(6)); detail("Background", boolean(7)); detail("Restore", boolean(8))
                         detail("Priority", value(9)); detail("Up", value(10)); detail("Dwell", value(11)); detail("Down", value(12))
+                        if let sub = Int(number) { NativeSubmasterControls(number: sub) }
                     }.deskCard()
                 } else {
                     detail("Absolute", boolean(3)); detail("Locked", boolean(4))
@@ -3249,6 +3325,9 @@ private struct ContentUnavailableViewCompat: View {
 
 private struct NativeConsoleHealthView: View {
     @EnvironmentObject var model: NativeRemoteModel
+    private var report: String {
+        "Element Remote diagnostics\nGenerated: \(Date().ISO8601Format())\nEos: \(model.softwareVersion)\nConnection: \(model.phase)\nReady: \(model.ready)\nResponding: \(model.online)\nOSC user: \(model.oscUser.map(String.init) ?? "not reported")\nIndependent user: \(model.independentUser)\nSent packets: \(model.sentPackets)\nReceived packets: \(model.receivedPackets)\nRound trip: \(model.latency.map(String.init) ?? "not measured") ms\nParameter replies: \(model.fixtureParameters.count)\nProcessor replies: \(model.processors.count)\n"
+    }
     private var users: [EosConsoleUser] { EosConsoleUser.parse(model.feedback["/eos/out/get/userlist"] ?? []) }
     private var healthFresh: Bool { model.online && model.healthReceivedAt.map { Date().timeIntervalSince($0) < 15 } == true }
     var body: some View {
@@ -3263,6 +3342,9 @@ private struct NativeConsoleHealthView: View {
                     if let date = model.healthReceivedAt { HStack { Text("Processor report").foregroundStyle(.secondary); Spacer(); Text(date,style:.time) }.font(.subheadline) }
                 }.deskCard()
                 VStack(alignment:.leading,spacing:8) {
+                    Text("Connection checks").font(.headline)
+                    Text(!model.ready ? "Connect in Settings and verify OSC is enabled on the console." : !model.online ? "Transport is open but console responses are not verified. Check OSC feedback settings and receive routing." : model.oscUser == nil ? "Console responds, but its OSC user has not been reported. Refresh and check the user setting." : model.selectedChannels.isEmpty ? "Connected. Select a channel to test parameter feedback." : model.fixtureParameters[model.selectedChannels.first ?? 0]?.isEmpty != false ? "No parameter reply for this selection. Check fixture patch and Eos version; Get Params requires Eos 3.2+." : "Connection and selected fixture parameter replies are available.").font(.subheadline)
+                    Divider()
                     Text("Processor health").font(.headline)
                     Text("Shows the console’s reported summary, not fixture temperatures or physical lamp feedback. Refreshes every five seconds while this page is open.").font(.caption).foregroundStyle(.secondary)
                     Text(EosCapabilities.supportsHealthSubscriptions(model.softwareVersion) ? "Eos 3.3.5+ detected. This page uses documented processor queries for its health summary." : "Enhanced health subscriptions require Eos 3.3.5+. Available processor summaries are shown below.").font(.caption).foregroundStyle(.secondary)
@@ -3284,6 +3366,7 @@ private struct NativeConsoleHealthView: View {
                 }.deskCard()
             }.padding()
         }.navigationTitle("Console Health")
+        .toolbar { ShareLink(item: report) { Label("Share diagnostics", systemImage: "square.and.arrow.up") } }
         .onAppear { model.requestDiagnostics() }
         .onChange(of:model.ready) { ready in if ready { model.requestDiagnostics() } }
         .onReceive(Timer.publish(every:5,on:.main,in:.common).autoconnect()) { _ in if model.ready { model.requestDiagnostics() } }
@@ -3327,7 +3410,29 @@ private struct NativeSoftkeysView: View {
     }
 }
 
+private struct MagicSheetTarget: Codable, Identifiable {
+    var id = UUID()
+    var channel: Int
+    var x: Double
+    var y: Double
+}
+
 private struct NativeMagicSheetView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @AppStorage("element.magicSheet.targets") private var targetData = "[]"
+    @State private var editing = false
+    @State private var channelEntry = ""
+    @State private var manageTargets = false
+    private var targets: [MagicSheetTarget] { (try? JSONDecoder().decode([MagicSheetTarget].self, from: Data(targetData.utf8))) ?? [] }
+    private func saveTargets(_ value: [MagicSheetTarget]) { if let data = try? JSONEncoder().encode(value), let text = String(data: data, encoding: .utf8) { targetData = text } }
+    private var targetLevels: [Int: Double?] {
+        var result: [Int: Double?] = [:]
+        for target in targets {
+            guard let date = model.fixtureReceivedAt[target.channel], Date().timeIntervalSince(date) <= 12 else { continue }
+            if let level = model.fixtures.values.first(where: { $0.channel == target.channel })?.level { result[target.channel] = level }
+        }
+        return result
+    }
     @State private var importing = false
     @State private var image: UIImage?
     @State private var error: String?
@@ -3338,14 +3443,29 @@ private struct NativeMagicSheetView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(name).font(.headline).lineLimit(1)
-                    Text("Imported image · read-only").font(.caption).foregroundStyle(.secondary)
+                    Text(targets.isEmpty ? "Imported image · add interactive channel targets" : "Imported image · mapped channel targets").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Import image") { importing = true }.buttonStyle(.bordered)
             }.padding(.horizontal)
             if let image {
-                MagicSheetZoomView(image: image).accessibilityLabel("Magic Sheet image. Pinch to zoom and drag to pan.")
-                Text("Pinch to zoom · drag to pan · double-tap to fit").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Toggle("Map channels", isOn: $editing).font(.caption)
+                    if editing { TextField("Channel", text: $channelEntry).keyboardType(.numberPad).textFieldStyle(.roundedBorder).frame(width: 100) }
+                    Button("Targets") { manageTargets = true }.font(.caption)
+                }.padding(.horizontal)
+                MagicSheetZoomView(image: image, targets: targets, editing: editing, selected: model.selectedChannels, ready: model.ready,
+                    levels: targetLevels,
+                    select: { channel in if model.ready, let selection = try? EosChannelSelection(String(channel)) { model.send(selection.select()) } },
+                    place: { x, y in
+                        guard targets.count < 12, let channel = Int(channelEntry), (1...999999).contains(channel) else { error = "Enter a valid channel. Up to 12 targets can be mapped."; return }
+                        saveTargets(targets + [MagicSheetTarget(channel: channel, x: x, y: y)]); error = nil; refreshTargets()
+                    })
+                Text(editing ? "Tap the image to place a channel target. Mapping does not send commands." : "Tap a target to select its channel · pinch to zoom · double-tap to fit")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                if !editing, !model.selectedChannels.isEmpty {
+                    HStack { NavigationLink("Movement") { NativeCommandTool { NativeWheelsView() } }; Spacer(); NavigationLink("Color") { NativeCommandTool { NativeColorView() } } }.padding(.horizontal)
+                }
             } else {
                 Spacer()
                 Image(systemName: "square.grid.3x3").font(.system(size: 48)).foregroundStyle(DeskPalette.accent)
@@ -3355,10 +3475,12 @@ private struct NativeMagicSheetView: View {
                 Spacer()
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
-            Text("Image contents do not update live. Import again after changing the console layout.")
+            Text("Background image stays static. Mapped targets show queried channel levels, refreshed every five seconds while connected; these are console values, not measured light output. XML layout importing is not yet supported.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal).padding(.bottom)
         }.navigationTitle("Magic Sheets")
-        .onAppear { image = UIImage(contentsOfFile: imageURL.path) }
+        .onAppear { image = UIImage(contentsOfFile: imageURL.path); refreshTargets() }
+        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in refreshTargets() }
+        .sheet(isPresented: $manageTargets) { NavigationStack { List { ForEach(targets) { target in Text("Channel \(target.channel)") }.onDelete { indices in var items = targets; items.remove(atOffsets: indices); saveTargets(items) } }.navigationTitle("Mapped Targets").toolbar { Button("Done") { manageTargets = false } } } }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.png, .jpeg], allowsMultipleSelection: false) { result in
             do {
                 guard let url = try result.get().first else { return }
@@ -3370,10 +3492,11 @@ private struct NativeMagicSheetView: View {
                 guard let imported = UIImage(data: data), imported.size.width * imported.size.height <= 40_000_000,
                       let png = imported.pngData() else { throw SheetImportError.invalid }
                 try png.write(to: imageURL, options: .atomic)
-                image = imported; name = url.deletingPathExtension().lastPathComponent; error = nil
+                image = imported; name = url.deletingPathExtension().lastPathComponent; saveTargets([]); error = nil
             } catch { self.error = error.localizedDescription }
         }
     }
+    private func refreshTargets() { if model.ready { model.requestFixtureDetails(Array(Set(targets.map(\.channel)))) } }
     private enum SheetImportError: LocalizedError {
         case tooLarge, invalid
         var errorDescription: String? { self == .tooLarge ? "Choose an image smaller than 25 MB." : "Choose a valid PNG or JPEG image up to 40 megapixels." }
@@ -3382,27 +3505,459 @@ private struct NativeMagicSheetView: View {
 
 private struct MagicSheetZoomView: UIViewRepresentable {
     let image: UIImage
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIView(context: Context) -> UIScrollView {
-        let scroll = UIScrollView()
-        scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 8
-        scroll.delegate = context.coordinator
-        let picture = UIImageView(); picture.contentMode = .scaleAspectFit
-        scroll.addSubview(picture); context.coordinator.picture = picture
+    let targets: [MagicSheetTarget]
+    let editing: Bool
+    let selected: [Int]
+    let ready: Bool
+    let levels: [Int: Double?]
+    let select: (Int) -> Void
+    let place: (Double, Double) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> SheetCanvasScroll {
+        let scroll = SheetCanvasScroll()
+        scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 8; scroll.delegate = context.coordinator
+        scroll.picture.isUserInteractionEnabled = true
+        scroll.addSubview(scroll.picture); context.coordinator.scroll = scroll
+        scroll.changedSize = { [weak coordinator = context.coordinator] in coordinator?.layoutTargets() }
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.fit(_:)))
         tap.numberOfTapsRequired = 2; scroll.addGestureRecognizer(tap)
+        let place = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.placeTarget(_:)))
+        place.require(toFail: tap); scroll.picture.addGestureRecognizer(place)
         return scroll
     }
-    func updateUIView(_ scroll: UIScrollView, context: Context) {
-        guard let picture = context.coordinator.picture else { return }
-        if picture.image !== image { scroll.setZoomScale(1, animated: false); picture.image = image }
-        DispatchQueue.main.async {
-            if scroll.zoomScale == 1 { picture.frame = scroll.bounds; scroll.contentSize = scroll.bounds.size }
-        }
+    func updateUIView(_ scroll: SheetCanvasScroll, context: Context) {
+        context.coordinator.parent = self
+        if scroll.picture.image !== image { scroll.setZoomScale(1, animated: false); scroll.picture.image = image; scroll.setNeedsLayout() }
+        context.coordinator.layoutTargets()
     }
     class Coordinator: NSObject, UIScrollViewDelegate {
-        weak var picture: UIImageView?
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
-        @objc func fit(_ gesture: UITapGestureRecognizer) { (gesture.view as? UIScrollView)?.setZoomScale(1, animated: true) }
+        var parent: MagicSheetZoomView
+        weak var scroll: SheetCanvasScroll?
+        init(_ parent: MagicSheetZoomView) { self.parent = parent }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { scroll?.picture }
+        private var imageRect: CGRect {
+            guard let picture = scroll?.picture else { return .zero }
+            return AVMakeRect(aspectRatio: parent.image.size, insideRect: picture.bounds)
+        }
+        func layoutTargets() {
+            guard let picture = scroll?.picture else { return }
+            picture.subviews.forEach { $0.removeFromSuperview() }
+            let rect = imageRect
+            for target in parent.targets {
+                let button = UIButton(type: .system)
+                let value = parent.ready ? (parent.levels[target.channel] ?? nil).map { "\(Int($0))%" } ?? "—" : "stale"
+                button.setTitle("\(target.channel) · \(value)", for: .normal)
+                button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+                button.backgroundColor = parent.selected.contains(target.channel) ? UIColor.systemOrange.withAlphaComponent(0.9) : UIColor.black.withAlphaComponent(0.8)
+                button.setTitleColor(.white, for: .normal); button.layer.cornerRadius = 10
+                button.frame = CGRect(x: rect.minX + CGFloat(target.x) * rect.width - 44, y: rect.minY + CGFloat(target.y) * rect.height - 22, width: 88, height: 44)
+                button.accessibilityLabel = "Select channel \(target.channel), \(value)"
+                button.isEnabled = parent.ready && !parent.editing
+                button.addAction(UIAction { [weak self] _ in self?.parent.select(target.channel) }, for: .touchUpInside)
+                picture.addSubview(button)
+            }
+        }
+        @objc func placeTarget(_ gesture: UITapGestureRecognizer) {
+            guard parent.editing, let picture = scroll?.picture else { return }
+            let point = gesture.location(in: picture); let rect = imageRect
+            guard rect.width > 0, rect.height > 0, rect.contains(point) else { return }
+            parent.place((point.x - rect.minX) / rect.width, (point.y - rect.minY) / rect.height)
+        }
+        @objc func fit(_ gesture: UITapGestureRecognizer) { scroll?.setZoomScale(1, animated: true) }
+    }
+}
+private class SheetCanvasScroll: UIScrollView {
+    let picture = UIImageView()
+    var changedSize: (() -> Void)?
+    private var previousSize = CGSize.zero
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.size != previousSize else { return }
+        previousSize = bounds.size
+        setZoomScale(1, animated: false)
+        picture.contentMode = .scaleAspectFit; picture.frame = CGRect(origin: .zero, size: bounds.size)
+        contentSize = bounds.size; changedSize?()
+    }
+}
+
+private struct NativeConsoleWorkflowBar: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var keyboard = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button { keyboard = true } label: { Label("Type command", systemImage: "keyboard") }.font(.caption)
+                Spacer()
+                NavigationLink { NativeWorkScreensView() } label: { Image(systemName: "rectangle.grid.2x2") }.accessibilityLabel("My work screens")
+            }
+            if !model.recentSelections.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(model.recentSelections, id: \.self) { channels in
+                            Button(channels.prefix(5).map(String.init).joined(separator: ", ") + (channels.count > 5 ? "…" : "")) {
+                                if let selection = try? EosChannelSelection(channels.map(String.init).joined(separator: " + ")) { model.send(selection.select()) }
+                            }.font(.caption.monospacedDigit()).buttonStyle(.bordered).disabled(!model.ready)
+                                .accessibilityLabel("Select channels " + channels.map(String.init).joined(separator: ", "))
+                        }
+                    }
+                }.accessibilityLabel("Selection history")
+            }
+        }.sheet(isPresented: $keyboard) { NavigationStack { NativeTypedCommandView() }.environmentObject(model) }
+    }
+}
+
+private struct NativeTypedCommandView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var message = ""
+    @FocusState private var focused: Bool
+    var body: some View {
+        Form {
+            Section("Console command") {
+                NativeCommandReadout()
+                TextField("28 At Full", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focused)
+                    .submitLabel(.send).onSubmit { submit() }
+                Text("Numbers default to Chan. Enter sends the command to the active OSC user.").font(.caption)
+                HStack {
+                    Button("Chan") { text = "Chan " }.keyboardShortcut("l", modifiers: .command)
+                    Button("Cue") { text = "Cue " }.keyboardShortcut("q", modifiers: .command)
+                    Spacer()
+                    Button("Clear") { text = "" }.keyboardShortcut(.delete, modifiers: .command)
+                }
+                Button("Send command") { submit() }.disabled(!model.ready || text.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) } }
+        }.navigationTitle("Type Command")
+        .toolbar { Button("Done") { dismiss() }.keyboardShortcut(.escape, modifiers: []) }
+        .onAppear { focused = true }
+        .onChange(of: model.session) { _ in text = "" }
+    }
+    private func submit() {
+        guard model.ready else { message = "Connect before sending a command."; return }
+        do { model.send(try EosWorkflowCommands.typedCommand(text)); text = ""; message = model.demoMode ? "Sent to Test Mode" : "Sent. Check console feedback above for the result." }
+        catch { message = error.localizedDescription }
+    }
+}
+
+private struct NativeFineFocusView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var fine = true
+    var body: some View {
+        NativeCommandTool {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Picker("Resolution", selection: $fine) { Text("Coarse").tag(false); Text("Fine").tag(true) }.pickerStyle(.segmented)
+                    DeskFocusPad(fine: fine, height: 400)
+                    Text("Axis locks affect touch movement only. Reset touch clears the pad without moving the fixtures.").font(.caption).foregroundStyle(.secondary)
+                    NavigationLink("Record focus palette") { NativePaletteRecorder() }
+                }.padding()
+            }
+        }.navigationTitle("Fine Focus")
+        .onAppear { if let channel = model.selectedChannels.first { model.requestParameters(channel) } }
+    }
+}
+
+private struct NativeCueNotesEditor: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let cueKey: String
+    @AppStorage("element.notes.notebook") private var notebook = "Rehearsal"
+    @State private var consoleText = ""
+    @State private var localText = ""
+    @State private var status = ""
+    @State private var confirmWrite = false
+    @State private var editingSession: UUID?
+    private var storageKey: String {
+        let host = model.demoMode ? "practice" : UserDefaults.standard.dictionary(forKey: "element.console.settings.v1")?["consoleHost"] as? String ?? "console"
+        return "element.cuenotes.\(host).\(notebook).\(cueKey)"
+    }
+    var body: some View {
+        Form {
+            Section(cueKey.replacingOccurrences(of: "/", with: " · ")) {
+                Text("Console notes").font(.headline)
+                TextEditor(text: $consoleText).frame(minHeight: 140)
+                Button("Review console write") { confirmWrite = true }.disabled(!model.ready || editingSession != model.session)
+                Button("Reload reported notes") { consoleText = model.showData.records[cueKey]?[27] as? String ?? ""; editingSession = model.session; status = "Loaded currently cached console notes." }
+                Text("Writing replaces notes for this cue part. A sent request is not a verified save; refresh the cue browser to confirm.").font(.caption)
+            }
+            Section("Local rehearsal notebook") {
+                TextField("Show / notebook name", text: $notebook).onChange(of: notebook) { _ in loadLocal() }
+                TextEditor(text: $localText).frame(minHeight: 140)
+                Button("Save local note") { UserDefaults.standard.set(localText, forKey: storageKey); status = "Saved on this device only." }
+                Text("Choose a notebook name for each show. Local notes never write to the console.").font(.caption)
+            }
+            if !status.isEmpty { Section { Text(status) } }
+        }.navigationTitle("Cue Notes")
+        .onAppear { consoleText = model.showData.records[cueKey]?[27] as? String ?? ""; editingSession = model.session; loadLocal() }
+        .confirmationDialog("Replace this cue part’s console notes?", isPresented: $confirmWrite, titleVisibility: .visible) {
+            Button("Write notes to console") {
+                guard model.ready, editingSession == model.session else { status = "Context changed. Reload before writing."; return }
+                do { model.send(try EosWorkflowCommands.cueNotes(key: cueKey, text: consoleText)); status = model.demoMode ? "Updated Test Mode notes." : "Notes sent. Refresh the cue browser to verify." }
+                catch { status = error.localizedDescription }
+            }
+        }
+    }
+    private func loadLocal() { localText = UserDefaults.standard.string(forKey: storageKey) ?? "" }
+}
+
+private struct NativePaletteRecorder: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var family = "fp"
+    @State private var number = ""
+    @State private var label = ""
+    @State private var review: [OSCMessage] = []
+    @State private var reviewSession: UUID?
+    @State private var confirm = false
+    @State private var status = ""
+    var body: some View {
+        Form {
+            Section("Fixtures") {
+                Text(model.selectedChannels.isEmpty ? "Choose channels before recording" : model.selectedChannels.map(String.init).joined(separator: ", "))
+                NavigationLink("Change selection") { NativeQuickControlView() }
+            }
+            Section("Palette") {
+                Picker("Type", selection: $family) { Text("Focus").tag("fp"); Text("Color").tag("cp"); Text("Beam").tag("bp") }
+                TextField("Number", text: $number).keyboardType(.numberPad)
+                TextField("Label (optional)", text: $label)
+                Text("Stores the selected fixtures’ current values for this parameter category. An existing number can require overwrite confirmation on the console.").font(.caption)
+                Button("Review record command") {
+                    do { review = try EosWorkflowCommands.recordPalette(family: family, number: number, channels: model.selectedChannels, label: label); reviewSession = model.session; confirm = true }
+                    catch { status = error.localizedDescription }
+                }.disabled(!model.ready || model.selectedChannels.isEmpty)
+            }
+            if !status.isEmpty { Section { Text(status) } }
+        }.navigationTitle("Record Palette")
+        .confirmationDialog("Record \(family.uppercased()) \(number) for \(model.selectedChannels.count) channels?", isPresented: $confirm, titleVisibility: .visible) {
+            Button("Send record command") {
+                guard model.ready, reviewSession == model.session else { status = "Selection changed. Review the record command again."; return }
+                // Labels must not be sent until the operator has resolved any overwrite prompt.
+                if let command = review.first { model.send(command) }
+                status = "Record sent. Resolve any console prompt, then apply the label after verifying the palette was stored."
+            }
+        } message: { Text((review.first?.parameters.first as? String ?? "") + (label.isEmpty ? "" : "\nLabel: " + label)) }
+        .safeAreaInset(edge: .bottom) {
+            if !status.isEmpty, review.count > 1 {
+                Button("Apply label to palette \(number)") {
+                    guard model.ready, reviewSession == model.session, let labelCommand = review.last else { status = "Context changed. Review again."; return }
+                    model.send(labelCommand); status = "Label sent. Refresh the palette browser to verify."
+                }.buttonStyle(.bordered).padding().background(DeskPalette.background)
+            }
+        }
+        .onChange(of: family) { _ in review = []; status = "" }
+        .onChange(of: number) { _ in review = []; status = "" }
+        .onChange(of: label) { _ in review = []; status = "" }
+    }
+}
+
+private struct NativeSubmasterControls: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let number: Int
+    @State private var level = 0.0
+    @State private var gestureSession: UUID?
+    @State private var lastSent = -Double.infinity
+    private var reported: Double? { (model.feedback["/eos/out/sub/\(number)"]?.first as? NSNumber)?.doubleValue }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack { Text("Sub \(number)").font(.headline); Spacer(); Text(reported.map { "\(Int($0 * 100))%" } ?? "Level not reported").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            Slider(value: Binding(get: { level }, set: { level = $0; apply() }), in: 0...1, onEditingChanged: { editing in
+                if editing { gestureSession = model.session } else { apply(force: true); gestureSession = nil }
+            }).accessibilityLabel("Submaster \(number) level")
+            HStack { ForEach(["fire", "home", "full", "out"], id: \.self) { action in
+                Button(action == "fire" ? "Bump" : action.capitalized) {
+                    if let commands = try? EosWorkflowCommands.submaster(number, action: action) { model.sendBatch(commands) }
+                }.buttonStyle(.bordered)
+            } }
+        }.disabled(!model.ready)
+        .onAppear { level = reported ?? 0 }
+        .onChange(of: reported) { value in if gestureSession == nil { level = value ?? 0 } }
+    }
+    private func apply(force: Bool = false) {
+        guard model.ready, gestureSession == model.session else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastSent > 0.05 else { return }
+        lastSent = now; model.send("/eos/sub/\(number)", [level])
+    }
+}
+
+private struct RemoteWorkItem: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var kind: String
+    var target: String
+}
+private struct RemoteWorkScreen: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var items: [RemoteWorkItem] = []
+}
+private struct NativeWorkScreensView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    @State private var screens: [RemoteWorkScreen] = []
+    @State private var selected: UUID?
+    @State private var adding = false
+    @State private var newScreen = false
+    @State private var screenName = ""
+    @State private var editing = false
+    private var current: RemoteWorkScreen? { screens.first { $0.id == selected } ?? screens.first }
+    private let storage = "element.workScreens.v1"
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                if let current {
+                    Picker("Work screen", selection: Binding(get: { current.id }, set: { selected = $0 })) {
+                        ForEach(screens) { Text($0.name).tag($0.id) }
+                    }.pickerStyle(.menu)
+                    HStack { Button("New screen") { screenName = ""; newScreen = true }; Spacer(); Button("Organize") { editing = true }; Button("Add control") { adding = true } }.font(.subheadline)
+                    if current.items.isEmpty { ContentUnavailableViewCompat(title: "Make this screen yours", text: "Add submasters, palettes, fixture selections or playback controls.", symbol: "rectangle.grid.2x2") }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12)], spacing: 12) {
+                        ForEach(current.items) { item in
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text(item.title).font(.headline)
+                                if item.kind == "Submaster", let number = Int(item.target) {
+                                    NativeSubmasterControls(number: number)
+                                } else if item.kind == "Playback" {
+                                    Text(model.activeCueText).font(.subheadline).foregroundStyle(.secondary)
+                                    HStack { Button("Stop / Back") { model.key("stop") }; Spacer(); Button("Go") { model.key("go_0") } }.buttonStyle(.bordered).disabled(!model.ready)
+                                } else {
+                                    Button(item.kind == "Selection" ? "Select channels" : "Apply to selection") { apply(item) }
+                                        .buttonStyle(.bordered).disabled(!model.ready || (item.kind != "Selection" && model.selectedChannels.isEmpty))
+                                    Text(item.kind + " · " + item.target).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.deskCard()
+                        }
+                    }
+                }
+            }.padding()
+        }.navigationTitle("My Work Screens")
+        .onAppear {
+            if let data = UserDefaults.standard.data(forKey: storage), let saved = try? JSONDecoder().decode([RemoteWorkScreen].self, from: data) { screens = saved }
+            if screens.isEmpty { screens = [RemoteWorkScreen(name: "Focus"), RemoteWorkScreen(name: "Show", items: [RemoteWorkItem(title: "Main playback", kind: "Playback", target: "")])] }
+            selected = screens.first?.id
+        }
+        .onChange(of: screens) { value in if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: storage) } }
+        .alert("New work screen", isPresented: $newScreen) {
+            TextField("Name", text: $screenName)
+            Button("Create") { let name = screenName.trimmingCharacters(in: .whitespaces); if !name.isEmpty { let screen = RemoteWorkScreen(name: String(name.prefix(60))); screens.append(screen); selected = screen.id } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $adding) {
+            NavigationStack {
+                NativeWorkItemEditor { item in
+                    if let index = screens.firstIndex(where: { $0.id == current?.id }) { screens[index].items.append(item) }
+                }
+            }
+        }
+        .sheet(isPresented: $editing) {
+            NavigationStack {
+                List {
+                    if let index = screens.firstIndex(where: { $0.id == current?.id }) {
+                        Section("Screen name") { TextField("Name", text: $screens[index].name) }
+                        Section("Drag to reorder") {
+                            ForEach(screens[index].items) { item in Text(item.title) }
+                                .onDelete { screens[index].items.remove(atOffsets: $0) }
+                                .onMove { screens[index].items.move(fromOffsets: $0, toOffset: $1) }
+                        }
+                        if screens.count > 1 { Button("Delete this screen", role: .destructive) { screens.remove(at: index); selected = screens.first?.id; editing = false } }
+                    }
+                }.environment(\.editMode, .constant(.active)).navigationTitle("Organize Screen")
+                .toolbar { Button("Done") { editing = false } }
+            }
+        }
+    }
+    private func apply(_ item: RemoteWorkItem) {
+        guard model.ready else { return }
+        if item.kind == "Selection", let selection = try? EosChannelSelection(item.target) { model.send(selection.select()); return }
+        let names = ["Focus palette":"Focus_Palette", "Color palette":"Color_Palette", "Beam palette":"Beam_Palette", "Preset":"Preset"]
+        guard let command = names[item.kind], let number = Int(item.target), (1...999999).contains(number), !model.selectedChannels.isEmpty else { return }
+        model.send("/eos/newcmd", ["\(command) \(number) Enter"])
+    }
+}
+private struct NativeWorkItemEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let save: (RemoteWorkItem) -> Void
+    @State private var title = ""
+    @State private var kind = "Submaster"
+    @State private var target = ""
+    @State private var error = ""
+    var body: some View {
+        Form {
+            TextField("Control name", text: $title)
+            Picker("Control", selection: $kind) { ForEach(["Submaster", "Focus palette", "Color palette", "Beam palette", "Preset", "Selection", "Playback"], id: \.self) { Text($0).tag($0) } }
+            if kind != "Playback" { TextField(kind == "Selection" ? "Channels, e.g. 1 Thru 5" : "Number", text: $target) }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            Button("Add control") {
+                let valid = kind == "Playback" || (kind == "Selection" ? (try? EosChannelSelection(target)) != nil : Int(target).map { (1...999999).contains($0) } == true)
+                guard valid else { error = "Enter a valid number or channel selection."; return }
+                save(RemoteWorkItem(title: title.isEmpty ? kind + " " + target : String(title.prefix(80)), kind: kind, target: target)); dismiss()
+            }
+        }.navigationTitle("Add Control").toolbar { Button("Cancel") { dismiss() } }
+    }
+}
+
+private struct NativeLightDiagnosticsView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                NavigationLink("Choose a fixture") { NativeQuickControlView() }.buttonStyle(.bordered)
+                if let channel = model.selectedChannels.first {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Channel \(channel)").font(.title2)
+                        Text(model.ready ? "Reported values" : "Disconnected · cached values").font(.caption).foregroundStyle(.secondary)
+                        if let parameters = model.fixtureParameters[channel], !parameters.isEmpty {
+                            ForEach(parameters.filter { ["intens", "intensity", "shutter_strobe", "shutter", "iris"].contains($0.oscName) }) { parameter in
+                                HStack { Text(parameter.name); Spacer(); Text(String(format: "%.2f", parameter.level)).monospacedDigit() }
+                            }
+                        } else { Text("No parameter reply for this fixture.").foregroundStyle(.secondary) }
+                        Button("Refresh values") { model.requestParameters(channel); model.requestFixtureDetails([channel]) }.disabled(!model.ready)
+                        NavigationLink("All fixture parameters") { NativeParameterInspector(channel: channel) }
+                    }.deskCard()
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Value source: unavailable over verified OSC replies").font(.headline)
+                        Text("The verified OSC replies used by this app do not identify whether a value is winning from a cue, submaster, manual control or park. A high level alone cannot establish the cause.").font(.subheadline).foregroundStyle(.secondary)
+                        Text("On Element, use About / current values to inspect the source. Also check Park, active submasters, and shutter or lamp state. The app does not automatically release or change any of these.").font(.subheadline)
+                    }.deskCard()
+                    NavigationLink("Browse submasters") { NativeShowBrowser(family: "sub", title: "Submasters") }
+                    NavigationLink("Console connection diagnostics") { NativeConsoleHealthView() }
+                } else { Text("Select a channel to inspect the values the console reports.").foregroundStyle(.secondary) }
+            }.padding()
+        }.navigationTitle("Why Is This Light On?")
+        .onAppear { if let channel = model.selectedChannels.first { model.requestParameters(channel) } }
+        .onChange(of: model.selectedChannels) { channels in if let channel = channels.first { model.requestParameters(channel) } }
+    }
+}
+
+
+private struct NativeExactParameterView: View {
+    @EnvironmentObject var model: NativeRemoteModel
+    let parameter: String
+    @State private var input = ""
+    @State private var context: UUID?
+    @State private var status = ""
+    var body: some View {
+        Form {
+            Section("Reported fixture ranges") {
+                ForEach(model.selectedChannels.prefix(12), id: \.self) { channel in
+                    if let capability = model.fixtureParameters[channel]?.first(where: { $0.oscName == parameter }) {
+                        Text(String(format: "Channel %d · %.2f to %.2f", channel, capability.minimum, capability.maximum))
+                    } else { Text("Channel \(channel) · unsupported or awaiting reply").foregroundStyle(.secondary) }
+                }
+            }
+            Section("Absolute value") {
+                TextField("Value in reported units", text: $input).keyboardType(.numbersAndPunctuation)
+                Text("Uses the parameter’s console-reported units. The value must fit every selected fixture’s range. Supports up to 12 fixtures at once.").font(.caption)
+                Button("Set selected fixtures") {
+                    guard model.ready, context == model.session, let value = Double(input) else { status = "Selection changed or invalid value. Reopen this control."; return }
+                    do { model.sendBatch(try EosWorkflowCommands.exactParameter(parameter, value: value, channels: model.selectedChannels, capabilities: model.fixtureParameters)); status = "Value sent. Check console feedback to verify." }
+                    catch { status = error.localizedDescription }
+                }.disabled(!model.ready || context != model.session || model.selectedChannels.isEmpty || model.selectedChannels.count > 12)
+            }
+            if !status.isEmpty { Text(status) }
+        }.navigationTitle(parameter.replacingOccurrences(of: "_", with: " ").capitalized)
+        .onAppear {
+            context = model.session
+            if let first = model.selectedChannels.first, let value = model.fixtureParameters[first]?.first(where: { $0.oscName == parameter })?.level { input = String(value) }
+            model.requestFixtureDetails(Array(model.selectedChannels.prefix(12)))
+        }
     }
 }

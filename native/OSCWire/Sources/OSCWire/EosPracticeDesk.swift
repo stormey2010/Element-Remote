@@ -12,6 +12,34 @@ public struct EosPracticeDesk {
     public private(set) var highlighted = false
     public private(set) var parked: Set<Int> = []
     public private(set) var addresses: [Int:Double] = [:]
+    private struct StoredPalette {
+        let values: [Int: [String: Double]]
+        let colors: [Int: [Double]]
+        let coordinates: [Int: [Double]]
+    }
+    private var palettes: [String: StoredPalette] = [:]
+    public mutating func recordPalette(family: String, number: Int) throws {
+        guard ["fp", "cp", "bp"].contains(family), (1...999999).contains(number), let selection else { throw OSCWireError.invalid("Choose fixtures and a palette") }
+        let colorNames: Set<String> = ["red","green","blue","amber","lime","cyan","magenta","yellow","hue","sat","saturation","color_temp","tint"]
+        var captured: [Int:[String:Double]] = [:]
+        for channel in selection.channels {
+            captured[channel] = (parameters[channel] ?? [:]).filter { name, _ in
+                if family == "fp" { return ["pan","tilt"].contains(name) }
+                if family == "cp" { return colorNames.contains(name) }
+                return !["pan","tilt","intens","intensity"].contains(name) && !colorNames.contains(name)
+            }
+        }
+        palettes["\(family)/\(number)"] = StoredPalette(values: captured, colors: family == "cp" ? colors.filter { selection.channels.contains($0.key) } : [:], coordinates: family == "cp" ? coordinates.filter { selection.channels.contains($0.key) } : [:])
+    }
+    @discardableResult public mutating func applyPalette(family: String, number: Int) -> Bool {
+        guard let stored = palettes["\(family)/\(number)"], let selection else { return false }
+        for channel in selection.channels {
+            for (name, value) in stored.values[channel] ?? [:] { parameters[channel, default: [:]][name] = value }
+            if let color = stored.colors[channel] { colors[channel] = color }
+            if let xy = stored.coordinates[channel] { coordinates[channel] = xy }
+        }
+        return true
+    }
     private var previousSelection: EosChannelSelection?
     private var remainderSnapshot: [Int: [String: Double]]?
     public static let groups: [Int: String] = [1: "1 Thru 4", 2: "5 Thru 8", 3: "9 Thru 12"]
