@@ -2,6 +2,7 @@ require "json"
 require "tmpdir"
 require "base64"
 require "securerandom"
+require "fileutils"
 
 def required(name)
   value = ENV[name].to_s.strip
@@ -95,5 +96,65 @@ platform :ios do
       skip_submission: true,
       distribute_external: false
     )
+  end
+
+  desc "Create a signed Ad Hoc IPA for registered iPhone and iPad devices"
+  lane :adhoc do
+    team, bundle, build = checked_settings
+    signing_path = required("ELEMENT_SIGNING_BUNDLE")
+    signing = JSON.parse(File.read(signing_path))
+    work_dir = Dir.mktmpdir("element-adhoc-signing")
+    api_key_path = File.join(work_dir, "AuthKey.p8")
+    File.write(api_key_path, signing.fetch("privateKey"), perm: 0600)
+    api_key = app_store_connect_api_key(
+      key_id: signing.fetch("keyId"),
+      issuer_id: signing.fetch("issuerId"),
+      key_filepath: api_key_path,
+      duration: 1200,
+      in_house: false
+    )
+
+    keychain_password = SecureRandom.hex(24)
+    create_keychain(name: "element_adhoc", password: keychain_password, default_keychain: true, unlock: true, timeout: 3600, lock_when_sleeps: false)
+    p12 = File.join(work_dir, "ElementDistribution.p12")
+    File.binwrite(p12, Base64.strict_decode64(signing.fetch("p12")))
+    File.chmod(0600, p12)
+    import_certificate(certificate_path: p12, certificate_password: signing.fetch("p12Password"), keychain_name: "element_adhoc", keychain_password: keychain_password)
+    identities = sh("security find-identity -v -p codesigning", log: false)
+    UI.user_error!("Distribution certificate import failed: no signing identity") if identities.include?("0 valid identities")
+
+    devices_path = required("IOS_DEVICES_CSV")
+    register_devices(devices_file: devices_path, api_key: api_key)
+    get_provisioning_profile(
+      api_key: api_key,
+      app_identifier: bundle,
+      team_id: team,
+      cert_id: signing.fetch("certificateId"),
+      provisioning_name: "Element Remote Ad Hoc",
+      adhoc: true,
+      force: true,
+      output_path: work_dir
+    )
+    profile = lane_context[SharedValues::SIGH_NAME]
+    UI.user_error!("No Ad Hoc provisioning profile was installed") if profile.to_s.empty?
+    build_app(
+      project: ENV.fetch("IOS_PROJECT", "ios/App/App.xcodeproj"),
+      scheme: "App",
+      configuration: "Release",
+      clean: true,
+      export_method: "ad-hoc",
+      output_directory: "artifacts/adhoc",
+      output_name: "ElementRemote.ipa",
+      skip_profile_detection: true,
+      xcargs: "DEVELOPMENT_TEAM=#{team} PRODUCT_BUNDLE_IDENTIFIER=#{bundle} CURRENT_PROJECT_VERSION=#{build} CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' PROVISIONING_PROFILE_SPECIFIER='#{profile.gsub("'", "")}'",
+      export_options: {
+        signingStyle: "manual",
+        teamID: team,
+        provisioningProfiles: { bundle => profile },
+        manageAppVersionAndBuildNumber: false
+      }
+    )
+  ensure
+    FileUtils.remove_entry(work_dir) if work_dir && File.directory?(work_dir)
   end
 end

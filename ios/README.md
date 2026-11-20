@@ -88,6 +88,21 @@ EAS can upload this project directly with `EAS_NO_VCS=1`. The root `app.json` is
 
 Once authenticated to an Expo account, run `EAS_NO_VCS=1 eas init` to link the project, then `EAS_NO_VCS=1 eas build --platform ios --profile native-check --non-interactive --no-wait`. This custom profile checks out the uploaded archive, installs the existing SPM/npm dependencies, tests the codec and compiles an **unsigned** device build using Xcode. It does not produce an installable TestFlight build or submit anything to Apple. A signed store profile and credentials must be configured after the native build passes.
 
+## Free hosted Ad Hoc install page
+
+`docs/install/` contains the iPhone/iPad install page and OTA manifest. `.github/workflows/adhoc.yml` creates a signed IPA for registered device UDIDs and publishes it as the `adhoc-latest` GitHub Release asset. GitHub Pages and public GitHub Release assets are free for this public repository.
+
+Ad Hoc distribution only installs on devices registered with the Apple Developer account. Each release's provisioning profile contains the registered device list. Visitors must use Safari on a registered iPhone or iPad.
+
+To enable distribution:
+
+1. In the repository's Settings → Pages, select **Deploy from a branch**, choose `main` and the `/docs` folder, then save. The install page URL is `https://stormey2010.github.io/Element-Remote/install/`.
+2. In Settings → Secrets and variables → Actions, add repository secret `ELEMENT_SIGNING_BUNDLE`. Use the existing Apple signing bundle format required by the TestFlight workflow. Its App Store Connect API key must be permitted to register devices and manage provisioning profiles.
+3. Register tester devices by running **Build Ad Hoc iOS install** under Actions. Enter their UDIDs separated by commas or newlines. The workflow registers devices, rebuilds the profile, signs the IPA and updates the `adhoc-latest` release.
+4. Send testers the Pages URL. They open it in Safari and tap **Install on this device**.
+
+Never put signing credentials or device UDIDs in the public site or source. Adding a device after a release requires another Ad Hoc build so the provisioning profile and IPA include it. App Store/TestFlight and Ad Hoc use different provisioning profiles.
+
 ### Signed EAS TestFlight profile
 
 The `testflight` custom profile runs fastlane directly on the uploaded Xcode project and submits the signed archive to App Store Connect. Its `ELEMENT_SIGNING_BUNDLE` variable is an EAS secret file containing the Apple API key and a reusable distribution identity. That file is stored outside the repository, excluded from source uploads, and only supplied to the build worker through EAS. No certificate is revoked by this flow.

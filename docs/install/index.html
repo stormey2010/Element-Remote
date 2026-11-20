@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10110f">
+  <title>Element Remote · Install</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #10110f; color: #f3f0e9; }
+    * { box-sizing: border-box; }
+    body { min-height: 100svh; margin: 0; display: grid; place-items: center; padding: 28px 18px; background: radial-gradient(ellipse at 50% 10%, #302b1e 0, #10110f 52%); }
+    main { width: min(100%, 480px); text-align: center; }
+    .mark { width: 76px; height: 76px; margin: 0 auto 24px; display: grid; place-items: center; border: 1px solid #847451; border-radius: 22px; color: #e4cf9c; font-size: 28px; font-weight: 750; letter-spacing: -.08em; background: linear-gradient(145deg, #27251f, #171715); box-shadow: 0 14px 50px #0008; }
+    .eyebrow { color: #c9b47e; font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin: 10px 0 12px; font-size: clamp(34px, 10vw, 48px); letter-spacing: -.045em; }
+    .intro { margin: 0 auto 28px; max-width: 370px; color: #bdbbb3; line-height: 1.6; }
+    .install { display: block; width: 100%; padding: 16px 22px; border-radius: 13px; background: #dec88f; color: #171610; font-size: 16px; font-weight: 750; text-decoration: none; box-shadow: 0 8px 26px #0005; }
+    .install:hover { background: #ecd9a4; }
+    .status { min-height: 24px; margin: 13px 0 30px; color: #99978f; font-size: 13px; line-height: 1.5; }
+    .steps { padding: 19px 21px; border: 1px solid #33332f; border-radius: 16px; background: #181917c9; text-align: left; }
+    .steps h2 { margin: 0 0 11px; font-size: 14px; }
+    ol { margin: 0; padding-left: 20px; color: #bdbbb3; font-size: 13px; line-height: 1.7; }
+    li + li { margin-top: 6px; }
+    .note { margin: 19px 0 0; color: #84837d; font-size: 12px; line-height: 1.55; }
+    footer { margin-top: 30px; color: #73726d; font-size: 11px; }
+    footer a { color: #aaa18b; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark" aria-hidden="true">ER</div>
+    <div class="eyebrow">For iPhone and iPad</div>
+    <h1>Element Remote</h1>
+    <p class="intro">Control your ETC Eos console over your local network with a direct, native iOS app.</p>
+    <a class="install" id="install" href="#">Install on this device</a>
+    <p class="status" id="status" role="status">Ad Hoc installation is available only on devices registered for this release.</p>
+    <section class="steps" aria-labelledby="steps-title">
+      <h2 id="steps-title">Install steps</h2>
+      <ol>
+        <li>Open this page in Safari on your iPhone or iPad.</li>
+        <li>Tap Install and confirm the iOS prompt.</li>
+        <li>Open Element Remote after iOS finishes installing it.</li>
+      </ol>
+    </section>
+    <p class="note">This is an Ad Hoc build. Your device must be registered with the developer before installation. The app connects directly to your console on the local Wi-Fi network.</p>
+    <footer><a href="https://elementremote.xyz/privacy/">Privacy</a> · <a href="mailto:support@elementremote.xyz">Support</a></footer>
+  </main>
+  <script>
+    const install = document.querySelector('#install');
+    const status = document.querySelector('#status');
+    const manifest = new URL('manifest.plist', location.href);
+    install.href = `itms-services://?action=download-manifest&url=${encodeURIComponent(manifest.href)}`;
+    if (!/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+      status.textContent = 'Open this page in Safari on a registered iPhone or iPad to install.';
+    }
+  </script>
+</body>
+</html>
