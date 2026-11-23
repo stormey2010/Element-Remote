@@ -1942,13 +1942,13 @@ private struct NativePlaybackView: View {
             VStack(spacing:16) {
                 HStack(spacing: 10) {
                     Button { model.key("stop") } label: {
-                        VStack(spacing: 6) { Image(systemName: "pause.fill").font(.system(size: 18)); Text("STOP / BACK").font(.system(size: 12, weight: .bold)).tracking(1) }
+                        VStack(spacing: 6) { Image(systemName: "pause.fill").font(.system(size: 18)); Text("STOP / BACK").font(.system(size: 12, weight: .bold)).tracking(1).lineLimit(1).minimumScaleFactor(0.7) }
                             .frame(maxWidth: .infinity, minHeight: 92)
                     }.buttonStyle(DeskButtonStyle(accent: .red)).frame(maxWidth: .infinity)
                     Button { model.key("go_0") } label: {
                         VStack(spacing: 6) { Image(systemName: "play.fill").font(.system(size: 22)); Text("GO").font(.system(size: 20, weight: .heavy)).tracking(2) }
                             .frame(maxWidth: .infinity, minHeight: 92)
-                    }.buttonStyle(DeskButtonStyle(accent: .green, prominent: true)).frame(maxWidth: .infinity).layoutPriority(1)
+                    }.buttonStyle(DeskButtonStyle(accent: .green, prominent: true)).frame(maxWidth: .infinity)
                 }.disabled(!model.ready)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Go to cue").font(.headline)
@@ -1964,7 +1964,7 @@ private struct NativePlaybackView: View {
                 HStack(spacing:12) {
                     NavigationLink { NativeCueMonitorView() } label: { Label("Cue Monitor",systemImage:"eye").frame(maxWidth:.infinity,minHeight:48) }
                     NavigationLink { NativeRehearsalView() } label: { Label("Rehearsal",systemImage:"clock.arrow.circlepath").frame(maxWidth:.infinity,minHeight:48) }
-                }.buttonStyle(.bordered)
+                }.font(.system(size: 15, weight: .medium)).buttonStyle(DeskButtonStyle())
                 if !model.cueHistory.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         DisclosureGroup("Recent cues") {
