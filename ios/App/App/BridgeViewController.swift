@@ -1235,22 +1235,25 @@ private let selectionKeys: [ConsoleKey] = [.init("Macro", "macro"), .init("Effec
 
 private enum DeskPalette {
     static var nightVision: Bool { UserDefaults.standard.bool(forKey: "element.nightVision") }
-    static var background: Color { nightVision ? Color(red: 0.05, green: 0.01, blue: 0.01) : Color(white: 0.045) }
-    static var surface: Color { nightVision ? Color(red: 0.12, green: 0.02, blue: 0.02) : Color(white: 0.105) }
-    static var raised: Color { nightVision ? Color(red: 0.20, green: 0.04, blue: 0.04) : Color(white: 0.145) }
-    static var field: Color { nightVision ? Color(red: 0.08, green: 0.01, blue: 0.01) : Color(white: 0.065) }
-    static var accent: Color { nightVision ? Color(red: 1.0, green: 0.25, blue: 0.25) : Color(red: 0.92, green: 0.81, blue: 0.62) }
-    static var rule: Color { Color.white.opacity(0.075) }
+    // Faceplate, panels and keycaps follow the classic Eos / Element look: black desk, navy keys, slate edges.
+    static var background: Color { nightVision ? Color(red: 0.05, green: 0.01, blue: 0.01) : Color(red: 0.027, green: 0.035, blue: 0.047) }
+    static var surface: Color { nightVision ? Color(red: 0.12, green: 0.02, blue: 0.02) : Color(red: 0.063, green: 0.090, blue: 0.122) }
+    static var raised: Color { nightVision ? Color(red: 0.20, green: 0.04, blue: 0.04) : Color(red: 0.094, green: 0.173, blue: 0.239) }
+    static var keyBase: Color { nightVision ? Color(red: 0.14, green: 0.03, blue: 0.03) : Color(red: 0.067, green: 0.129, blue: 0.180) }
+    static var field: Color { nightVision ? Color(red: 0.08, green: 0.01, blue: 0.01) : Color(red: 0.016, green: 0.024, blue: 0.035) }
+    static var accent: Color { nightVision ? Color(red: 1.0, green: 0.25, blue: 0.25) : Color(red: 0.98, green: 0.74, blue: 0.32) }
+    static var legend: Color { nightVision ? Color(red: 1.0, green: 0.45, blue: 0.45) : Color(red: 0.863, green: 0.894, blue: 0.925) }
+    static var slate: Color { nightVision ? Color(red: 0.55, green: 0.12, blue: 0.12) : Color(red: 0.471, green: 0.525, blue: 0.588) }
+    static var rule: Color { slate.opacity(0.22) }
     static var surfaceGradient: LinearGradient {
-        LinearGradient(colors: [raised.opacity(0.8), surface], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [surface.opacity(0.95), surface], startPoint: .top, endPoint: .bottom)
     }
     static var edgeGradient: LinearGradient {
-        LinearGradient(colors: [.white.opacity(0.13), .white.opacity(0.035)], startPoint: .top, endPoint: .bottom)
+        LinearGradient(colors: [slate.opacity(0.42), slate.opacity(0.16)], startPoint: .top, endPoint: .bottom)
     }
 }
 
 private struct DeskButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("element.nightVision") private var nightVision = false
@@ -1259,57 +1262,79 @@ private struct DeskButtonStyle: ButtonStyle {
     private var tint: Color {
         if nightVision { return .red }
         switch accent {
-        case .blue: return Color(red: 0.64, green: 0.75, blue: 0.90)
-        case .purple: return Color(red: 0.77, green: 0.69, blue: 0.89)
-        case .red: return Color(red: 0.94, green: 0.57, blue: 0.53)
-        case .orange: return Color(red: 0.91, green: 0.76, blue: 0.54)
-        case .green: return Color(red: 0.64, green: 0.82, blue: 0.68)
-        case .teal, .mint: return Color(red: 0.68, green: 0.83, blue: 0.78)
+        case .blue: return Color(red: 0.45, green: 0.70, blue: 0.98)
+        case .purple: return Color(red: 0.74, green: 0.62, blue: 0.98)
+        case .red: return Color(red: 0.98, green: 0.42, blue: 0.40)
+        case .orange: return Color(red: 0.99, green: 0.66, blue: 0.30)
+        case .green: return Color(red: 0.40, green: 0.86, blue: 0.56)
+        case .teal, .mint: return Color(red: 0.42, green: 0.86, blue: 0.80)
         default: return accent
         }
     }
-    private let radius: CGFloat = 14
+    private var plain: Bool { accent == .gray && !nightVision }
+    private let radius: CGFloat = 8
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(accent == .gray && !nightVision ? Color(white: 0.94) : tint)
+        let pressed = configuration.isPressed
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return configuration.label
+            .foregroundStyle(plain ? DeskPalette.legend : (prominent ? Color.black.opacity(0.85) : tint))
             .background {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(LinearGradient(colors: [configuration.isPressed ? DeskPalette.surface : DeskPalette.raised, DeskPalette.surface], startPoint: .top, endPoint: .bottom))
-                if accent != .gray || nightVision {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(LinearGradient(colors: [tint.opacity(prominent ? 0.25 : 0.10), tint.opacity(prominent ? 0.15 : reduceTransparency ? 0.08 : 0.045)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                ZStack(alignment: .top) {
+                    if prominent && !plain {
+                        shape.fill(LinearGradient(colors: [tint.opacity(pressed ? 0.75 : 0.95), tint.opacity(pressed ? 0.6 : 0.78)], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        shape.fill(LinearGradient(colors: [pressed ? DeskPalette.keyBase : DeskPalette.raised, DeskPalette.keyBase], startPoint: .top, endPoint: .bottom))
+                        if !plain {
+                            // Backlit indicator strip, like the coloured keys on an Element faceplate.
+                            Capsule().fill(tint.opacity(pressed ? 1 : 0.85)).frame(height: 2.5).padding(.horizontal, 10).padding(.top, 5)
+                                .shadow(color: tint.opacity(0.6), radius: 3)
+                        }
+                    }
                 }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(accent == .gray ? DeskPalette.edgeGradient : LinearGradient(colors: [tint.opacity(prominent ? 0.45 : 0.25), tint.opacity(0.10)], startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
+                shape.strokeBorder(plain || !prominent ? DeskPalette.edgeGradient : LinearGradient(colors: [tint, tint.opacity(0.6)], startPoint: .top, endPoint: .bottom), lineWidth: pressed ? 1 : 0.75)
             }
-            .shadow(color: .black.opacity(configuration.isPressed ? 0 : 0.22), radius: 4, x: 0, y: 2)
+            .overlay {
+                // Faint top highlight gives each key a physical keycap edge.
+                shape.inset(by: 1).stroke(Color.white.opacity(pressed ? 0 : 0.05), lineWidth: 0.5).mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center))
+            }
+            .shadow(color: .black.opacity(pressed ? 0 : 0.45), radius: 0, x: 0, y: pressed ? 0 : 2)
+            .offset(y: pressed ? 1.5 : 0)
             .opacity(enabled ? 1 : 0.38)
-            .scaleEffect(configuration.isPressed ? 0.975 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: pressed)
+    }
+}
+
+/// Small silk-screen style label used above groups of keys and cards.
+private struct DeskLabel: View {
+    var text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(1.3).foregroundStyle(DeskPalette.slate)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 extension View {
-    func deskPanel(cornerRadius: CGFloat = 18) -> some View {
+    func deskPanel(cornerRadius: CGFloat = 12) -> some View {
         self.background {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(DeskPalette.surfaceGradient)
         }.overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(DeskPalette.edgeGradient, lineWidth: 0.75)
-        }.shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 4)
+        }
     }
     func deskCard() -> some View {
         self.padding(16).deskPanel()
     }
     @ViewBuilder func commandGlass() -> some View {
         if #available(iOS 26.0, *) {
-            self.background(DeskPalette.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14))
+            self.background(DeskPalette.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
         } else {
-            self.background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 14))
-                .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(DeskPalette.rule) }
+            self.background(DeskPalette.surface, in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(DeskPalette.rule) }
         }
     }
 }
@@ -1390,73 +1415,88 @@ struct NativeRemoteView: View {
         }
         .padding(.top, horizontalSizeClass == .regular ? 8 : 0)
         .background(DeskPalette.background.ignoresSafeArea())
+        .toolbarBackground(DeskPalette.background, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarColorScheme(.dark, for: .tabBar)
         .alert("Console", isPresented: Binding(get: { !model.error.isEmpty }, set: { if !$0 { model.error = "" } })) {
             Button("OK", role: .cancel) { model.error = "" }
         } message: { Text(model.error) }
     }
     @ViewBuilder private func screenHeader(_ title: String) -> some View {
+        let showsCommand = title == "Console" || !(paths[title] ?? []).isEmpty
         if verticalSizeClass == .compact {
-            HStack(spacing:14) {
-                Text(title).font(.system(size:22,weight:.semibold)).tracking(-0.5).fixedSize()
-                if title == "Console" || !(paths[title] ?? []).isEmpty {
-                    NativeCommandReadout().padding(.horizontal,10).padding(.vertical,6).background(DeskPalette.surface,in:RoundedRectangle(cornerRadius:10)).frame(maxWidth:.infinity)
-                } else { Spacer() }
-                if model.demoMode { Text("TEST").font(.caption2.weight(.semibold)).foregroundStyle(DeskPalette.accent) }
-                Button { showSettings = true } label: { Image(systemName:"gearshape").frame(width:44,height:44) }.buttonStyle(.plain).accessibilityLabel("Settings")
-            }.padding(.horizontal,16).background(DeskPalette.background)
-        } else {
-        VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text(title).font(.system(size: 32, weight: .semibold)).tracking(-0.9)
-                Spacer()
-                if title != "More" && title != "Console" {
-                    Button { showSettings = true } label: {
-                        Image(systemName: "link").font(.system(size: 20)).frame(width: 38, height: 38)
-                            .background(.white.opacity(0.07), in: Circle())
-                    }.accessibilityLabel("Connections")
-                }
-                Button { showSettings = true } label: {
-                    Image(systemName: "gearshape").font(.system(size: 20, weight: .regular)).frame(width: 44, height: 44)
-                        .background(DeskPalette.surface, in: Circle())
-                        .overlay { Circle().strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
-                }.accessibilityLabel("Settings")
-            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.9))
-                .frame(height: 48).fixedSize(horizontal: false, vertical: true).layoutPriority(2)
-                .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 16)
-            if !model.online && !model.demoMode {
-            Button { showSettings = true } label: {
-                HStack(spacing: 8) {
-                    Circle().fill(model.online ? Color.green : Color.gray).frame(width: 8, height: 8)
-                    Text(model.demoMode ? "Test Mode" : model.online ? "Connected" : model.ready ? "Awaiting reply" : "Offline")
-                    if !model.ready { Text("·  Connect") }
+                Text(title).font(.system(size: 20, weight: .semibold)).tracking(-0.4).fixedSize()
+                if showsCommand {
+                    NativeCommandReadout().padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
+                        .frame(maxWidth: .infinity)
+                } else { Spacer() }
+                statusChip
+                settingsButton
+            }.padding(.horizontal, 16).background(DeskPalette.background)
+        } else {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("ELEMENT REMOTE").font(.system(size: 10, weight: .semibold)).tracking(1.6).foregroundStyle(DeskPalette.slate)
+                        Text(title).font(.system(size: 28, weight: .semibold)).tracking(-0.6).foregroundStyle(DeskPalette.legend)
+                    }
                     Spacer()
-                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                }.font(.subheadline).padding(.horizontal, 14).frame(height: 40)
-                    .background(DeskPalette.raised.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
-            }.buttonStyle(.plain).frame(height: 40).fixedSize(horizontal: false, vertical: true).layoutPriority(2)
-                .padding(.horizontal, 18).padding(.bottom, 12)
-            }
-            if title == "Console" || !(paths[title] ?? []).isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Command").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                        Spacer()
-                        if model.demoMode {
-                            Text("TEST MODE").font(.system(size: 9, weight: .semibold)).tracking(0.8)
-                                .foregroundStyle(DeskPalette.accent).padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(DeskPalette.accent.opacity(0.08), in: Capsule())
-                                .overlay { Capsule().strokeBorder(DeskPalette.accent.opacity(0.18), lineWidth: 0.5) }
-                        }
-                    }.padding(.horizontal, 8)
+                    statusChip
+                    settingsButton
+                }
+                .frame(height: 52).fixedSize(horizontal: false, vertical: true).layoutPriority(2)
+                .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, showsCommand ? 10 : 14)
+                if showsCommand {
                     NativeCommandReadout()
-                        .padding(12)
-                        .background(DeskPalette.surfaceGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(model.demoMode ? DeskPalette.accent.opacity(0.55) : DeskPalette.rule, lineWidth: 0.75) }
-                }.padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }.background(DeskPalette.background).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 12).padding(.vertical, 11)
+                        .background(DeskPalette.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(model.demoMode ? DeskPalette.accent.opacity(0.5) : DeskPalette.rule, lineWidth: 0.75)
+                        }
+                        .padding(.horizontal, 16).padding(.bottom, 12)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Rectangle().fill(DeskPalette.rule).frame(height: 0.5)
+            }.background(DeskPalette.background).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var statusText: String {
+        if model.demoMode { return "TEST" }
+        if model.online { return "LIVE" }
+        return model.ready ? "WAITING" : "OFFLINE"
+    }
+    private var statusColor: Color {
+        if model.demoMode { return DeskPalette.accent }
+        if model.online { return Color(red: 0.40, green: 0.86, blue: 0.56) }
+        return model.ready ? DeskPalette.accent : DeskPalette.slate
+    }
+    private var statusChip: some View {
+        Button { showSettings = true } label: {
+            HStack(spacing: 6) {
+                Circle().fill(statusColor).frame(width: 7, height: 7).shadow(color: statusColor.opacity(model.online ? 0.8 : 0), radius: 3)
+                Text(statusText).font(.system(size: 11, weight: .semibold)).tracking(1.0)
+            }
+            .foregroundStyle(DeskPalette.legend.opacity(0.9))
+            .padding(.horizontal, 10).frame(height: 30)
+            .background(DeskPalette.surface, in: Capsule())
+            .overlay { Capsule().strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
+        }.buttonStyle(.plain)
+            .accessibilityLabel("Connection: " + statusText.lowercased())
+            .accessibilityHint("Opens connection settings")
+    }
+    private var settingsButton: some View {
+        Button { showSettings = true } label: {
+            Image(systemName: "gearshape").font(.system(size: 17)).foregroundStyle(DeskPalette.legend.opacity(0.9))
+                .frame(width: 38, height: 38)
+                .background(DeskPalette.surface, in: Circle())
+                .overlay { Circle().strokeBorder(DeskPalette.rule, lineWidth: 0.75) }
+                .frame(width: 44, height: 44)
+        }.buttonStyle(.plain).accessibilityLabel("Settings")
     }
 
 }
@@ -1467,12 +1507,13 @@ private struct NativeCommandReadout: View {
     @EnvironmentObject var model: NativeRemoteModel
     var body: some View {
         let command = model.commandPresentation
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 1).fill(DeskPalette.accent).frame(width: 1, height: 21)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(model.demoMode ? "TEST:" : "LIVE:").font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundStyle(DeskPalette.accent).accessibilityHidden(true)
             (Text(command.text.isEmpty ? (model.ready ? "Ready" : "Waiting for console…") : command.text)
-                + Text(command.isComplete ? "  ◦" : "").foregroundColor(DeskPalette.accent))
-                .foregroundStyle(model.commandError ? Color.red : command.text.isEmpty ? Color.secondary : Color.primary)
-                .font(.system(size: 17)).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                + Text(command.isComplete ? " #" : "").foregroundColor(DeskPalette.accent))
+                .foregroundStyle(model.commandError ? Color(red: 0.98, green: 0.42, blue: 0.40) : command.text.isEmpty ? DeskPalette.slate : DeskPalette.legend)
+                .font(.system(size: 16, weight: .medium, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
                 .textSelection(.enabled).lineLimit(3)
                 .accessibilityLabel("Console command: " + command.text)
                 .accessibilityValue(command.isComplete ? "Command complete" : "Editing command")
@@ -1682,79 +1723,93 @@ private struct NativeFixtureDetailsView: View {
 
 private struct NativeConsoleView: View {
     @EnvironmentObject var model: NativeRemoteModel
+    private let targetKeys: [ConsoleKey] = [.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)]
+    private let functionKeys: [ConsoleKey] = [.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group"), .init("Out", "out")]
+    private let operatorKeys: [ConsoleKey] = [.init("/", "\\"), .init("+", "+"), .init("−", "-"), .init("Thru", "thru")]
+    private let numberKeys: [ConsoleKey] = [.init("7", "7"), .init("8", "8"), .init("9", "9"), .init("Full", "full"),
+                                            .init("4", "4"), .init("5", "5"), .init("6", "6"), .init("Sneak", "sneak"),
+                                            .init("1", "1"), .init("2", "2"), .init("3", "3"), .init("At", "@"),
+                                            .init("Clear", "clear_cmd"), .init("0", "0"), .init(".", "."), .init("Enter", "enter", DeskPalette.accent)]
     var body: some View {
         GeometryReader { geometry in
-            let height = min(76.0, max(48.0, (geometry.size.height - 164) / 7.0))
+            let height = min(72.0, max(46.0, (geometry.size.height - 196) / 7.0))
             if geometry.size.width > geometry.size.height && geometry.size.width >= 600 {
-                HStack(alignment:.top,spacing:16) {
+                HStack(alignment: .top, spacing: 16) {
                     ScrollView {
-                        VStack(spacing:10) {
+                        VStack(spacing: 12) {
                             NativeSoftkeysView()
                             NativeConsoleWorkflowBar()
-                            grid([.init("Record","record",.red),.init("Cue","cue",.blue),.init("Sub","sub",.green),.init("Chan","chan",.orange)],count:4,height:44)
-                            grid([.init("Rem Dim","rem_dim"),.init("Go to Cue","go_to_cue"),.init("Group","group"),.init("Out","out")],count:4,height:44)
-                            grid([.init("/","\\"),.init("+","+"),.init("−","-"),.init("Thru","thru")],count:4,height:44)
-                            HStack(spacing:10) {
-                                NavigationLink(value:RemoteTool.movement) { toolLabel("Movement","move.3d") }
-                                NavigationLink(value:RemoteTool.color) { toolLabel("Color","paintpalette") }
-                            }.buttonStyle(DeskButtonStyle())
-                            DisclosureGroup("More keys") { grid(selectionKeys + [.init("Highlight","highlight"),.init("Home","home"),.init("Delay","delay"),.init("Time","time"),.init("Level","level")],count:4,height:44) }.font(.subheadline).foregroundStyle(.secondary)
-                        }.padding(.bottom,16)
-                    }.frame(width:max(280,geometry.size.width*0.46))
+                            VStack(spacing: 8) {
+                                DeskLabel("Targets")
+                                grid(targetKeys, count: 4, height: 44)
+                                grid(functionKeys, count: 4, height: 44)
+                                grid(operatorKeys, count: 4, height: 44)
+                            }.padding(10).deskPanel()
+                            tools
+                            moreKeys(count: 4)
+                        }.padding(.bottom, 16)
+                    }.frame(width: max(280, geometry.size.width * 0.46))
                     ScrollView {
-                        grid([.init("7","7"),.init("8","8"),.init("9","9"),.init("Full","full"),
-                              .init("4","4"),.init("5","5"),.init("6","6"),.init("Sneak","sneak"),
-                              .init("1","1"),.init("2","2"),.init("3","3"),.init("At","@"),
-                              .init("Clear","clear_cmd"),.init("0","0"),.init(".","."),.init("Enter","enter",DeskPalette.accent)],count:4,height:max(44.0,min(62.0,(Double(geometry.size.height)-40.0)/4.0)))
-                            .padding(.bottom,16)
+                        grid(numberKeys, count: 4, height: max(44.0, min(62.0, (Double(geometry.size.height) - 60.0) / 4.0)))
+                            .padding(10).deskPanel()
+                            .padding(.bottom, 16)
                     }
-                }.padding(.horizontal,16).padding(.top,8)
+                }.padding(.horizontal, 16).padding(.top, 10)
             } else {
-            ScrollView {
-                VStack(spacing: 16) {
-                    NativeSoftkeysView()
-                            NativeConsoleWorkflowBar()
-                    grid([.init("Record", "record", .red), .init("Cue", "cue", .blue), .init("Sub", "sub", .green), .init("Chan", "chan", .orange)], count: 4, height: height)
-                    VStack(spacing: 8) {
-                        grid([.init("Rem Dim", "rem_dim"), .init("Go to Cue", "go_to_cue"), .init("Group", "group"), .init("Out", "out")], count: 4, height: height)
-                        grid([.init("/", "\\"), .init("+", "+"), .init("−", "-"), .init("Thru", "thru")], count: 4, height: height)
-                        grid([.init("7", "7"), .init("8", "8"), .init("9", "9"), .init("Full", "full")], count: 4, height: height)
-                        grid([.init("4", "4"), .init("5", "5"), .init("6", "6"), .init("Sneak", "sneak")], count: 4, height: height)
-                        grid([.init("1", "1"), .init("2", "2"), .init("3", "3"), .init("At", "@")], count: 4, height: height)
-                        grid([.init("Clear", "clear_cmd"), .init("0", "0"), .init(".", "."), .init("Enter", "enter", DeskPalette.accent)], count: 4, height: height)
-                    }
-                    HStack(spacing: 10) {
-                        NavigationLink(value: RemoteTool.movement) {
-                            toolLabel("Movement", "move.3d")
-                        }
-                        NavigationLink(value: RemoteTool.color) {
-                            toolLabel("Color", "paintpalette")
-                        }
-                    }.font(.subheadline).buttonStyle(DeskButtonStyle())
-                    DisclosureGroup("More keys") {
-                        grid(selectionKeys + [.init("Highlight", "highlight"), .init("Delay", "delay"), .init("Time", "time"), .init("Home", "home"), .init("Level", "level")], count: 3, height: 44)
-                    }.font(.subheadline).foregroundStyle(.secondary).padding(.top, 36)
-                }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 24)
-            }
+                ScrollView {
+                    VStack(spacing: 14) {
+                        NativeSoftkeysView()
+                        NativeConsoleWorkflowBar()
+                        VStack(spacing: 8) {
+                            grid(targetKeys, count: 4, height: height)
+                            Rectangle().fill(DeskPalette.rule).frame(height: 0.5).padding(.vertical, 3)
+                            grid(functionKeys, count: 4, height: height)
+                            grid(operatorKeys, count: 4, height: height)
+                            grid(numberKeys, count: 4, height: height)
+                        }.padding(10).deskPanel(cornerRadius: 14)
+                        tools
+                        moreKeys(count: 3).padding(.top, 10)
+                    }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 24)
+                }
             }
         }
     }
+    private var tools: some View {
+        HStack(spacing: 8) {
+            NavigationLink(value: RemoteTool.movement) { toolLabel("Movement", "move.3d") }
+            NavigationLink(value: RemoteTool.color) { toolLabel("Color", "paintpalette") }
+        }.buttonStyle(DeskButtonStyle())
+    }
+    private func moreKeys(count: Int) -> some View {
+        DisclosureGroup {
+            grid(selectionKeys + [.init("Highlight", "highlight"), .init("Delay", "delay"), .init("Time", "time"), .init("Home", "home"), .init("Level", "level")], count: count, height: 44)
+                .padding(.top, 8)
+        } label: {
+            Text("More keys").font(.system(size: 14, weight: .medium)).foregroundStyle(DeskPalette.legend.opacity(0.8))
+        }.padding(12).deskPanel()
+    }
     private func toolLabel(_ title: String, _ symbol: String) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(DeskPalette.accent)
-            Text(title).font(.system(size: 14, weight: .medium))
+            Image(systemName: symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(DeskPalette.accent)
+            Text(title).font(.system(size: 14, weight: .semibold))
         }.frame(maxWidth: .infinity, minHeight: 48)
     }
     private func grid(_ keys: [ConsoleKey], count: Int, height: Double) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: count), spacing: 8) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: count), spacing: 7) {
             ForEach(keys) { key in deskKey(key, height: height) }
         }
     }
     private func deskKey(_ key: ConsoleKey, height: Double) -> some View {
-        let isNumber = Int(key.title) != nil
+        let isNumber = Int(key.title) != nil || key.title == "."
         let isPrimary = ["Record", "Cue", "Sub", "Chan", "Enter"].contains(key.title)
+        let isOperator = ["/", "+", "−"].contains(key.title)
+        let size: CGFloat = isNumber || isOperator ? 26 : isPrimary ? 13.5 : 12.5
         return Button { model.key(key.address) } label: {
-            Text(key.title).font(.system(size: isNumber ? 28 : isPrimary ? 16 : 14, weight: isNumber ? .regular : .medium, design: .default)).minimumScaleFactor(0.7).multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: height).padding(.horizontal, 2)
+            Text(isNumber || isOperator ? key.title : key.title.uppercased())
+                .font(.system(size: size, weight: isNumber || isOperator ? .regular : .semibold))
+                .tracking(isNumber || isOperator ? 0 : 0.6)
+                .minimumScaleFactor(0.65).lineLimit(2).multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: height).padding(.horizontal, 2)
         }.buttonStyle(DeskButtonStyle(accent: key.color, prominent: key.address == "enter")).accessibilityLabel(key.title)
     }
 }
@@ -1769,9 +1824,12 @@ private struct NativeFadersView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                Picker("Fader bank", selection: $bank) {
-                    ForEach(0..<4) { index in Text("\(index*10+1)–\(index*10+10)").tag(index) }
-                }.pickerStyle(.segmented)
+                VStack(spacing: 6) {
+                    DeskLabel("Fader bank")
+                    Picker("Fader bank", selection: $bank) {
+                        ForEach(0..<4) { index in Text("\(index*10+1)–\(index*10+10)").tag(index) }
+                    }.pickerStyle(.segmented)
+                }
                 NavigationLink { NativeShowBrowser(family: "sub", title: "Submasters") } label: { Label("Submaster details", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity, alignment: .leading).deskCard() }
                 grid
                 DisclosureGroup("Adjust selected faders") { controls }
@@ -1789,8 +1847,10 @@ private struct NativeFadersView: View {
                             model.haptic()
                             if model.selection.contains(n) { model.selection.remove(n) } else { model.selection.insert(n) }
                         } label: {
-                            Text("\(n)").font(.system(size: 16, weight: .medium)).frame(width: 32, height: 32)
-                                .background(model.selection.contains(n) ? DeskPalette.accent.opacity(0.3) : Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                            Text("\(n)").font(.system(size: 15, weight: .semibold).monospacedDigit()).frame(width: 34, height: 34)
+                                .foregroundStyle(model.selection.contains(n) ? Color.black.opacity(0.85) : DeskPalette.legend)
+                                .background(model.selection.contains(n) ? DeskPalette.accent : DeskPalette.raised, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .overlay { RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(DeskPalette.edgeGradient, lineWidth: 0.75) }
                         }.buttonStyle(.plain).accessibilityLabel("Select fader \(n)").accessibilityAddTraits(model.selection.contains(n) ? .isSelected : [])
                         Text(model.text("/eos/out/fader/1/\(n)/name").isEmpty ? "Fader \(n)" : model.text("/eos/out/fader/1/\(n)/name")).font(.body).lineLimit(1)
                         Spacer(minLength: 4)
@@ -1863,27 +1923,33 @@ private struct NativePlaybackView: View {
 
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
-                        Text("NOW").font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+                        DeskLabel("Active cue").fixedSize()
                         Spacer()
-                        Text(model.isCueFading ? "Fading" : "Ready").font(.caption).foregroundStyle(DeskPalette.accent)
+                        Text(model.isCueFading ? "FADING" : "READY").font(.system(size: 11, weight: .bold)).tracking(1)
+                            .foregroundStyle(model.isCueFading ? DeskPalette.accent : Color(red: 0.40, green: 0.86, blue: 0.56))
                     }
                     Text(model.activeCueText.isEmpty ? "No cue feedback yet" : model.activeCueText)
-                        .font(.system(size: 26, weight: .semibold)).tracking(-0.4).lineSpacing(3).frame(maxWidth: .infinity, alignment: .leading)
-                    ProgressView(value: model.activeCuePercent).tint(DeskPalette.accent)
-                    HStack {
-                        Text("NEXT").font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+                        .font(.system(size: 24, weight: .semibold)).tracking(-0.3).lineSpacing(3).frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(model.activeCueText.isEmpty ? DeskPalette.slate : DeskPalette.legend)
+                    ProgressView(value: model.activeCuePercent).tint(Color(red: 0.40, green: 0.86, blue: 0.56))
+                    HStack(alignment: .firstTextBaseline) {
+                        DeskLabel("Pending").fixedSize()
                         Text(model.pendingCueText).font(.subheadline).lineLimit(2)
                         Spacer()
                     }
                 }.deskCard()
             }.frame(maxWidth:.infinity)
             VStack(spacing:16) {
-                HStack(spacing: 12) {
-                    Button { model.key("stop") } label: { Label("Stop / Back", systemImage: "pause").frame(maxWidth: .infinity, minHeight: 64) }
-                        .buttonStyle(DeskButtonStyle(accent: .red))
-                    Button { model.key("go_0") } label: { Label("Go", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 64) }
-                        .buttonStyle(DeskButtonStyle(accent: .green, prominent: true))
-                }.font(.headline).disabled(!model.ready)
+                HStack(spacing: 10) {
+                    Button { model.key("stop") } label: {
+                        VStack(spacing: 6) { Image(systemName: "pause.fill").font(.system(size: 18)); Text("STOP / BACK").font(.system(size: 12, weight: .bold)).tracking(1) }
+                            .frame(maxWidth: .infinity, minHeight: 92)
+                    }.buttonStyle(DeskButtonStyle(accent: .red)).frame(maxWidth: .infinity)
+                    Button { model.key("go_0") } label: {
+                        VStack(spacing: 6) { Image(systemName: "play.fill").font(.system(size: 22)); Text("GO").font(.system(size: 20, weight: .heavy)).tracking(2) }
+                            .frame(maxWidth: .infinity, minHeight: 92)
+                    }.buttonStyle(DeskButtonStyle(accent: .green, prominent: true)).frame(maxWidth: .infinity).layoutPriority(1)
+                }.disabled(!model.ready)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Go to cue").font(.headline)
                     HStack {
